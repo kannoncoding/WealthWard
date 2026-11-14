@@ -1,0 +1,22 @@
+name: Android checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 testing/check_public_files.py
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: true
+      - run: sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0'
+      - run: chmod +x gradlew
+      - run: ./gradlew assembleDebug testDebugUnitTest lintDebug --no-daemon
+
