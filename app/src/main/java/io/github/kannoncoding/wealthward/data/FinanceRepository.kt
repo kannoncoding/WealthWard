@@ -17,10 +17,11 @@ class AppContainer(context: Context) {
     private val database = WealthDatabase.open(context)
     val repository = FinanceRepository(database)
     val dashboard = repository.dashboard
-    suspend fun initializeDemo() = repository.seedDemo()
+    suspend fun initializeDemo() = repository.seedWorkspace()
 }
 class FinanceRepository(private val db: WealthDatabase) {
     private val dao = db.ledger()
+    val workspace = F05Repository(db)
     val dashboard: Flow<DashboardSnapshot> = combine(dao.observeAccounts(), dao.observePostingCount()) { _, _ -> DashboardSnapshot(balances()) }
     suspend fun accounts() = dao.accounts()
     suspend fun savePlan(period: FinancePeriodEntity, version: PlanVersionEntity, lines: List<PlanLineEntity>) = db.withTransaction {
@@ -56,6 +57,7 @@ class FinanceRepository(private val db: WealthDatabase) {
         dao.insertTransaction(transaction)
         dao.insertPostings(postings)
     }
+    /** Retained F04 synthetic fixture for compatibility with the baseline persistence suite. */
     suspend fun seedDemo() = db.withTransaction {
         if (dao.accounts().isEmpty()) {
             dao.insertAccount(AccountEntity("account-a", "Account A", "CRC", "CASH", 100000))
@@ -65,9 +67,24 @@ class FinanceRepository(private val db: WealthDatabase) {
             dao.insertAccount(AccountEntity("credit-b", "Credit B", "USD", "LIABILITY", 0, 200000))
         }
     }
+    suspend fun seedWorkspace() = db.withTransaction {
+        if (dao.accounts().isEmpty()) {
+            val specs = listOf(
+                Triple("deposit-1", "Deposit One", "CRC"), Triple("deposit-2", "Deposit Two", "CRC"),
+                Triple("deposit-3", "Deposit Three", "CRC"), Triple("deposit-4", "Deposit Four", "CRC"),
+                Triple("deposit-5", "Deposit Five", "USD"), Triple("deposit-6", "Deposit Six", "USD"),
+                Triple("card-1-crc", "Card One", "CRC"), Triple("card-1-usd", "Card One", "USD"),
+                Triple("card-2-crc", "Card Two", "CRC"), Triple("card-2-usd", "Card Two", "USD")
+            )
+            specs.forEach { (id,name,currency) ->
+                val card=id.startsWith("card")
+                workspace.execute(F05Command.CreateAccount("seed:$id",id,if(card) id.substringBeforeLast('-') else id,name,Currency.valueOf(currency),if(card) "LIABILITY" else "CASH",0,"2026-01-01",if(card) 10000000 else 0))
+            }
+        }
+    }
     /** Technical core fixture only; this is not an encrypted user backup. */
     suspend fun exportFixture(): String = db.withTransaction {
-        JSONObject().put("version", 2).put("accounts", JSONArray().apply {
+        JSONObject().put("version", 3).put("workspace", JSONObject(dao.workspaceState()?.payload ?: F05Repository.EMPTY_STATE)).put("requests", JSONArray().apply { dao.requests().forEach { put(JSONObject().put("id", it.id).put("fingerprint", it.fingerprint).put("result", it.result)) } }).put("accounts", JSONArray().apply {
             dao.accounts().forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("currency", it.currency).put("kind", it.kind).put("openingMinor", it.openingMinor).put("creditLimitMinor", it.creditLimitMinor)) }
         }).put("transactions", JSONArray().apply {
             dao.transactions().forEach { put(JSONObject().put("id", it.id).put("occurredAt", it.occurredAt).put("businessDate", it.businessDate).put("type", it.type).put("confirmed", it.confirmed).put("periodId", it.periodId ?: JSONObject.NULL).put("expenseMinor", it.expenseMinor)) }
@@ -88,7 +105,8 @@ class FinanceRepository(private val db: WealthDatabase) {
     suspend fun restoreFixture(json: String) {
         val parsed = try {
             val root = JSONObject(json)
-            if (root.strictLong("version") != 2L) throw DomainFailure.UnsupportedVersion()
+            val fixtureVersion = root.strictLong("version")
+            if (fixtureVersion !in setOf(2L, 3L)) throw DomainFailure.UnsupportedVersion()
             val accounts = root.getJSONArray("accounts").objects().map { a ->
                 Currency.valueOf(a.getString("currency"))
                 AccountEntity(a.getString("id"), a.getString("name"), a.getString("currency"), a.getString("kind"), a.strictLong("openingMinor"), a.strictLong("creditLimitMinor"))
@@ -106,7 +124,7 @@ class FinanceRepository(private val db: WealthDatabase) {
                 if (accounts.none { it.id == p.accountId && it.currency == p.currency } || transactions.none { it.id == p.transactionId } || p.minor == 0L) throw DomainFailure.Invalid("Invalid fixture references")
             }
             transactions.forEach { t ->
-                PostingRequest(t.id, Instant.parse(t.occurredAt), LocalDate.parse(t.businessDate), FinancialType.valueOf(t.type), postings.filter { it.transactionId == t.id }.map { PostingLeg(it.accountId, Money(it.minor, Currency.valueOf(it.currency))) }, t.periodId, t.expenseMinor).let { validateAccounts(it, accounts) }
+                PostingRequest(t.id, Instant.parse(t.occurredAt), if (fixtureVersion == 3L && root.getJSONObject("workspace").getJSONArray("operations").objects().any { it.getString("id") == t.id }) BusinessTime.date(Instant.parse(t.occurredAt)) else LocalDate.parse(t.businessDate), FinancialType.valueOf(t.type), postings.filter { it.transactionId == t.id }.map { PostingLeg(it.accountId, Money(it.minor, Currency.valueOf(it.currency))) }, t.periodId, t.expenseMinor).let { validateAccounts(it, accounts) }
             }
             val periods = root.getJSONArray("periods").objects().map { FinancePeriodEntity(it.getString("id"), it.getString("startsOn"), it.getString("endsOn")) }
             val versions = root.getJSONArray("planVersions").objects().map {
@@ -150,9 +168,13 @@ class FinanceRepository(private val db: WealthDatabase) {
                 if (association.facilityId.isBlank() || accounts.none { it.id == association.accountId && it.kind == "LIABILITY" && it.currency == association.currency }) throw DomainFailure.Invalid("Invalid credit association")
             }
             reconstruct(accounts, transactions, postings)
-            CoreFixture(accounts, transactions, postings, periods, versions, lines, allocations, associations)
+            val workspace = if (fixtureVersion == 3L) root.getJSONObject("workspace").toString() else F05Repository.EMPTY_STATE
+            val requests = if (fixtureVersion == 3L) root.getJSONArray("requests").objects().map { WorkspaceRequestEntity(it.getString("id"), it.getString("fingerprint"), it.getString("result")) } else emptyList()
+            F05Repository.validateRestore(workspace, requests, accounts, transactions, postings)
+            CoreFixture(accounts, transactions, postings, periods, versions, lines, allocations, associations, workspace, requests)
         } catch (error: DomainFailure) { throw error } catch (_: Exception) { throw DomainFailure.Invalid("Corrupt fixture") }
         db.withTransaction {
+            dao.clearRequests(); dao.clearWorkspace()
             dao.clearAllocations(); dao.clearCreditAssociations()
             dao.clearTransactions(); dao.clearAccounts()
             dao.clearPlanLines(); dao.clearPlanVersions(); dao.clearPeriods()
@@ -164,10 +186,12 @@ class FinanceRepository(private val db: WealthDatabase) {
             dao.insertPostings(parsed.postings)
             parsed.allocations.forEach { dao.insertAllocation(it) }
             parsed.associations.forEach { dao.insertCreditAssociation(it) }
+            dao.saveWorkspace(WorkspaceStateEntity("main", parsed.workspace))
+            parsed.requests.forEach { dao.insertRequest(it) }
         }
     }
 }
-private data class CoreFixture(val accounts: List<AccountEntity>, val transactions: List<TransactionEntity>, val postings: List<PostingEntity>, val periods: List<FinancePeriodEntity>, val versions: List<PlanVersionEntity>, val lines: List<PlanLineEntity>, val allocations: List<AllocationEntity>, val associations: List<CreditAssociationEntity>)
+private data class CoreFixture(val accounts: List<AccountEntity>, val transactions: List<TransactionEntity>, val postings: List<PostingEntity>, val periods: List<FinancePeriodEntity>, val versions: List<PlanVersionEntity>, val lines: List<PlanLineEntity>, val allocations: List<AllocationEntity>, val associations: List<CreditAssociationEntity>, val workspace: String, val requests: List<WorkspaceRequestEntity>)
 private fun reconstruct(accounts: List<AccountEntity>, transactions: List<TransactionEntity>, postings: List<PostingEntity>): Map<String, Long> {
     val confirmed = transactions.filter { it.confirmed }.map { it.id }.toSet()
     return accounts.associate { account ->
@@ -203,3 +227,7 @@ private fun validateAccounts(request: PostingRequest, accountList: List<AccountE
     if (request.type == FinancialType.CREDIT_PAYMENT && (request.legs.size != 2 || request.legs.none { accounts.getValue(it.accountId).kind == "LIABILITY" && it.amount.minor > 0 } || request.legs.none { accounts.getValue(it.accountId).kind == "CASH" && it.amount.minor < 0 }))
         throw DomainFailure.Invalid("Credit payment must move cash into a liability settlement")
 }
+
+
+
+

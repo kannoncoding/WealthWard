@@ -27,6 +27,7 @@
 !/app/schemas/io.github.kannoncoding.wealthward.data.WealthDatabase/
 !/app/schemas/io.github.kannoncoding.wealthward.data.WealthDatabase/1.json
 !/app/schemas/io.github.kannoncoding.wealthward.data.WealthDatabase/2.json
+!/app/schemas/io.github.kannoncoding.wealthward.data.WealthDatabase/3.json
 !/testing/
 !/testing/check_public_files.py
 !/.github/

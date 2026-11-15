@@ -32,7 +32,7 @@ object BusinessTime {
     val zone: ZoneId = ZoneId.of("America/Costa_Rica")
     fun date(instant: Instant): LocalDate = instant.atZone(zone).toLocalDate()
 }
-enum class FinancialType { INCOME, EXPENSE, TRANSFER, CREDIT_PURCHASE, CREDIT_PAYMENT }
+enum class FinancialType { INCOME, EXPENSE, TRANSFER, CREDIT_PURCHASE, CREDIT_PAYMENT, FX_TRANSFER, FX_CREDIT_PAYMENT, REVERSAL, REFUND, ADJUSTMENT }
 data class PostingLeg(val accountId: String, val amount: Money)
 data class PostingRequest(
     val id: String, val occurredAt: Instant, val date: LocalDate,
@@ -43,7 +43,7 @@ data class PostingRequest(
         if (date != BusinessTime.date(occurredAt)) throw DomainFailure.Invalid("Business date must use Costa Rica time")
         if (id.isBlank() || legs.isEmpty() || legs.any { it.accountId.isBlank() || it.amount.minor == 0L })
             throw DomainFailure.Invalid("Posting requires an id and nonzero account legs")
-        if (expenseMinor < 0 || (type == FinancialType.CREDIT_PAYMENT && expenseMinor != 0L))
+        if ((expenseMinor < 0 && type !in setOf(FinancialType.REFUND, FinancialType.REVERSAL)) || (type == FinancialType.CREDIT_PAYMENT && expenseMinor != 0L))
             throw DomainFailure.Invalid("Settlement cannot count as an expense")
         if (type == FinancialType.TRANSFER && (legs.size < 2 || legs.map { it.accountId }.distinct().size != legs.size || expenseMinor != 0L))
             throw DomainFailure.Invalid("Transfer needs distinct source and destination and no expense")
@@ -54,3 +54,5 @@ data class PostingRequest(
         }
     }
 }
+
+
