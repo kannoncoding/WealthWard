@@ -10,6 +10,10 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = set("""
+app/src/main/java/io/github/kannoncoding/wealthward/domain/F06.kt
+app/src/main/java/io/github/kannoncoding/wealthward/data/F06Repository.kt
+app/src/test/java/io/github/kannoncoding/wealthward/domain/F06PlanningTest.kt
+app/src/androidTest/java/io/github/kannoncoding/wealthward/data/F06PersistenceTest.kt
 .github/workflows/android.yml
 .gitignore
 README.md
@@ -22,6 +26,8 @@ app/src/androidTest/java/io/github/kannoncoding/wealthward/data/PersistenceTest.
 app/src/androidTest/java/io/github/kannoncoding/wealthward/data/F05PersistenceTest.kt
 app/src/androidTest/java/io/github/kannoncoding/wealthward/data/F05MigrationTest.kt
 app/src/androidTest/java/io/github/kannoncoding/wealthward/ui/F05UiTest.kt
+app/src/androidTest/java/io/github/kannoncoding/wealthward/ui/F06UiTest.kt
+app/src/androidTest/java/io/github/kannoncoding/wealthward/ui/F06ReminderTest.kt
 app/src/main/AndroidManifest.xml
 app/src/main/java/io/github/kannoncoding/wealthward/MainActivity.kt
 app/src/main/java/io/github/kannoncoding/wealthward/WealthWardApplication.kt
@@ -33,6 +39,8 @@ app/src/main/java/io/github/kannoncoding/wealthward/domain/F05.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/WealthWardApp.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/F05Forms.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/F05Import.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/F06Screens.kt
+app/src/main/java/io/github/kannoncoding/wealthward/notifications/LocalReminders.kt
 app/src/main/res/values/themes.xml
 app/src/main/res/drawable/ic_wealthward.xml
 app/src/main/res/xml/data_extraction_rules.xml

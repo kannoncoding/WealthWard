@@ -22,6 +22,7 @@ class AppContainer(context: Context) {
 class FinanceRepository(private val db: WealthDatabase) {
     private val dao = db.ledger()
     val workspace = F05Repository(db)
+    val planning = F06Repository(db)
     val dashboard: Flow<DashboardSnapshot> = combine(dao.observeAccounts(), dao.observePostingCount()) { _, _ -> DashboardSnapshot(balances()) }
     suspend fun accounts() = dao.accounts()
     suspend fun savePlan(period: FinancePeriodEntity, version: PlanVersionEntity, lines: List<PlanLineEntity>) = db.withTransaction {
@@ -227,6 +228,7 @@ private fun validateAccounts(request: PostingRequest, accountList: List<AccountE
     if (request.type == FinancialType.CREDIT_PAYMENT && (request.legs.size != 2 || request.legs.none { accounts.getValue(it.accountId).kind == "LIABILITY" && it.amount.minor > 0 } || request.legs.none { accounts.getValue(it.accountId).kind == "CASH" && it.amount.minor < 0 }))
         throw DomainFailure.Invalid("Credit payment must move cash into a liability settlement")
 }
+
 
 
 

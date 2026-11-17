@@ -53,6 +53,25 @@ internal class Drafts(val values: MutableMap<String, String>) {
   val scope = rememberCoroutineScope()
   val repository = container.repository.workspace
   val snapshot by repository.observe.collectAsStateWithLifecycle(initialValue = F05Snapshot())
+  val planning = container.repository.planning
+  val planningEvent by planning.observe.collectAsStateWithLifecycle(initialValue = F06Snapshot())
+  var planningMonth by rememberSaveable { mutableStateOf(java.time.YearMonth.now(BusinessTime.zone).toString()) }
+  var loadedPlan by remember { mutableStateOf<F06Snapshot?>(null) }
+  val plan = loadedPlan ?: F06Snapshot()
+  val context = androidx.compose.ui.platform.LocalContext.current
+  val reminders = remember(context) { io.github.kannoncoding.wealthward.notifications.LocalReminders(context) }
+  LaunchedEffect(planningEvent, planningMonth, snapshot) { runCatching { planning.snapshot(planningMonth) }.onSuccess { loadedPlan = it } }
+  LaunchedEffect(loadedPlan) {
+   val reminderPlan = loadedPlan ?: return@LaunchedEffect
+   reminders.save(io.github.kannoncoding.wealthward.notifications.ReminderPreferences(reminderPlan.reminders.enabled, reminderPlan.reminders.daysBefore, reminderPlan.reminders.hour))
+   reminders.update(reminderPlan.occurrences.filter { it.pendingMinor > 0 }.map { io.github.kannoncoding.wealthward.notifications.ReminderItem(it.id, it.name, it.dueDate, "${it.dueDate} · Pendiente ${money(it.pendingMinor,it.currency)}") })
+  }
+  val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+  DisposableEffect(lifecycleOwner) {
+   val observer = androidx.lifecycle.LifecycleEventObserver { _, event -> if(event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) reminders.reconcile() }
+   lifecycleOwner.lifecycle.addObserver(observer)
+   onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+  }
   var selected by rememberSaveable { mutableIntStateOf(0) }
   var screen by rememberSaveable { mutableStateOf("") }
   var subject by rememberSaveable { mutableStateOf("") }
@@ -64,7 +83,7 @@ internal class Drafts(val values: MutableMap<String, String>) {
   var ready by remember { mutableStateOf(false) }
   val saved = rememberSaveable(saver = mapSaver(save = { it.toMap() }, restore = { mutableStateMapOf<String, String>().apply { putAll(it.mapValues { e -> e.value as String }) } })) { mutableStateMapOf<String, String>() }
   val drafts = remember(saved) { Drafts(saved) }
-  drafts.scope = "$screen:$subject"
+  drafts.scope = if(screen.startsWith("f06")) "$screen:$subject:$planningMonth" else "$screen:$subject"
   val errorFocus = remember { FocusRequester() }
   val largeText = LocalDensity.current.fontScale > 1.3f
   LaunchedEffect(container) { try { container.initializeDemo(); ready = true } catch (e: Exception) { failure = "No se pudieron abrir los datos: ${e.message}" } }
@@ -81,6 +100,15 @@ internal class Drafts(val values: MutableMap<String, String>) {
     finally { busy = false }
    }
   }
+  fun submitPlan(command: F06Command) {
+   if(busy) return
+   busy = true; failure = ""
+   scope.launch {
+    try { planning.execute(command); loadedPlan = planning.snapshot(planningMonth); drafts.clear(); success = "Guardado. Plan y movimientos actualizados."; screen = ""; subject = "" }
+    catch(e:Exception) { failure = userError(e) }
+    finally { busy = false }
+   }
+  }
   Scaffold(bottomBar = {
    if (screen.isEmpty() && largeText) Row(Modifier.fillMaxWidth().background(Scheme.surface).navigationBarsPadding().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     Tabs.forEachIndexed { index, title -> FilterChip(selected = selected == index, onClick = { selected = index; accountId = ""; failure = "" }, label = { Text(title) }, modifier = Modifier.heightIn(min = 48.dp)) }
@@ -93,12 +121,13 @@ internal class Drafts(val values: MutableMap<String, String>) {
     Column(Modifier.widthIn(max = 800.dp).fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
      Text("WealthWard", style = MaterialTheme.typography.labelLarge)
      if (screen.isNotEmpty()) TextButton(onClick = { back() }, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text("← Volver · conservar borrador") }
-     Text(if (screen.isEmpty()) Tabs[selected] else actionTitle(screen), style = MaterialTheme.typography.headlineMedium)
+     Text(if (screen.isEmpty()) Tabs[selected] else if(screen.startsWith("f06")) f06Title(screen) else actionTitle(screen), style = MaterialTheme.typography.headlineMedium)
      if (!ready || busy) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Procesando" })
      if (failure.isNotEmpty()) Text(failure, color = Scheme.error, modifier = Modifier.focusRequester(errorFocus).focusable().semantics { liveRegion = LiveRegionMode.Assertive })
      if (success.isNotEmpty()) Text(success, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
      if (screen.isNotEmpty()) {
-      F05Form(screen, subject, snapshot, drafts, busy, onError = { failure = it }, onSubmit = ::submit, onCancel = { back() }, preview = { rows -> repository.previewImport(rows) })
+      if(screen.startsWith("f06")) F06Form(screen,subject,planningMonth,plan,snapshot,drafts,busy,{ failure=it },::submitPlan,{ back() })
+      else F05Form(screen, subject, snapshot, drafts, busy, onError = { failure = it }, onSubmit = ::submit, onCancel = { back() }, preview = { rows -> repository.previewImport(rows) })
      } else when (selected) {
       0 -> {
        InfoCard("Tu dinero por moneda", "El saldo propio, las reservas y las deudas se muestran por separado. Los importes son ficticios hasta que captures tus propios datos.", 0)
@@ -109,7 +138,7 @@ internal class Drafts(val values: MutableMap<String, String>) {
        }
        Action("Asignar dinero a un propósito") { open("reserve") }
        Action("Registrar gasto") { open("expense") }
-       InfoCard("Presupuesto por periodo", "El editor del presupuesto está previsto para F06. Puedes gestionar tus reservas financiadas en Metas.", 3)
+       PlanningDashboard(planningMonth,{ planningMonth=it },plan,snapshot,::open,::submitPlan)
       }
       1 -> {
        Action("Registrar gasto") { open("expense") }; Action("Registrar ingreso") { open("income") }
@@ -168,6 +197,7 @@ internal class Drafts(val values: MutableMap<String, String>) {
        if (snapshot.accounts.none { it.reserves.isNotEmpty() }) Text("Aún no hay reservas. Asigna dinero disponible para comenzar.")
       }
       4 -> {
+       PlanningConfiguration(plan,::open)
        Action("Importación asistida · pegar tabla") { open("import") }
        InfoCard("Datos locales", "La app funciona sin conexión bancaria. La importación solicita cuenta, importe y confirmación; las notas no se convierten en dinero.", 3)
        InfoCard("Diagnóstico", "Versión ${io.github.kannoncoding.wealthward.BuildConfig.VERSION_NAME}\nAndroid ${android.os.Build.VERSION.RELEASE}\n${io.github.kannoncoding.wealthward.BuildConfig.APPLICATION_ID}", 4)

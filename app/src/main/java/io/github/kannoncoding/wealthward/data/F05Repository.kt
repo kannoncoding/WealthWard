@@ -61,6 +61,7 @@ class F05Repository(private val db: WealthDatabase) {
   dao.request(command.requestId)?.let { if(it.fingerprint != fingerprint) invalid("Request key already used for different content"); return@withTransaction it.result }
   val state = load()
   apply(command,state)
+  validatePlanningRestore(state,dao.accounts())
   snapshot(state) // Reconstruct all balances before any commit, with checked integer arithmetic.
   state.appendRow("audit",obj("requestId" to command.requestId,"action" to command.javaClass.simpleName,"subjectId" to command.requestId,"reason" to when(command) { is F05Command.Void -> command.reason; is F05Command.Correct -> command.reason; is F05Command.Refund -> command.reason; is F05Command.ResolveDifference -> command.reason; else -> "" }))
   dao.saveWorkspace(WorkspaceStateEntity("main",state.toString()))
@@ -367,6 +368,7 @@ class F05Repository(private val db: WealthDatabase) {
    fun JSONArray.rows() = (0 until length()).map { getJSONObject(it) }
    fun JSONObject.integer(key:String):Long { val n=get(key); if(n !is Int && n !is Long) fail(); return (n as Number).toLong() }
    val state=JSONObject(payload)
+   validatePlanningRestore(state,accounts)
    val accountMap=accounts.associateBy { it.id }; val tx=transactions.associateBy { it.id }
    val names=listOf("accounts","operations","reserves","holds","reconciliations","audit","imports")
    names.forEach { key ->
@@ -488,6 +490,7 @@ class F05Repository(private val db: WealthDatabase) {
   }
  }
 }
+
 
 
 
