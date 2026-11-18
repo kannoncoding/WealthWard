@@ -30,8 +30,29 @@ data class WorkspaceRequestEntity(@PrimaryKey val id: String, val fingerprint: S
 
 @Dao
 interface LedgerDao {
-    @Query("SELECT * FROM workspace_state WHERE id='main'") suspend fun workspaceState(): WorkspaceStateEntity?
-    @Query("SELECT * FROM workspace_state WHERE id='main'") fun observeWorkspace(): Flow<WorkspaceStateEntity?>
+    @Query("SELECT * FROM workspace_state WHERE id='main'") suspend fun smallWorkspaceState(): WorkspaceStateEntity?
+    @Query("SELECT length(CAST(payload AS BLOB)) FROM workspace_state WHERE id='main'") suspend fun workspaceByteCount(): Int?
+    @Query("SELECT substr(CAST(payload AS BLOB), :start, :count) FROM workspace_state WHERE id='main'")
+    suspend fun workspaceChunk(start: Int, count: Int): ByteArray
+    @Query("SELECT id FROM workspace_state WHERE id='main'") fun observeWorkspace(): Flow<String?>
+
+    @Transaction
+    suspend fun workspaceState(): WorkspaceStateEntity? {
+        val size = workspaceByteCount() ?: return null
+        val chunkSize = 256 * 1024
+        if (size <= chunkSize) return smallWorkspaceState()
+        // A whole row can exceed Android's CursorWindow. Decode once so a chunk may bisect UTF-8.
+        val payload = ByteArray(size)
+        var offset = 0
+        while (offset < size) {
+            val count = minOf(chunkSize, size - offset)
+            val chunk = workspaceChunk(offset + 1, count)
+            check(chunk.size == count)
+            chunk.copyInto(payload, offset)
+            offset += count
+        }
+        return WorkspaceStateEntity("main", payload.toString(Charsets.UTF_8))
+    }
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun saveWorkspace(value: WorkspaceStateEntity)
     @Query("SELECT * FROM workspace_requests WHERE id=:id") suspend fun request(id: String): WorkspaceRequestEntity?
     @Query("SELECT * FROM workspace_requests ORDER BY id") suspend fun requests(): List<WorkspaceRequestEntity>

@@ -98,6 +98,11 @@ internal class Drafts(val values: MutableMap<String, String>) {
   var success by rememberSaveable { mutableStateOf("") }
   var busy by remember { mutableStateOf(false) }
   var ready by remember { mutableStateOf(false) }
+  val projectionPreferences = projectionPreferences()
+  var projectionSettings by rememberProjectionSettings(planningMonth, projectionPreferences)
+  val projection = if (ready && selected == 0 && (screen.isEmpty() || screen == "f08")) {
+   loadProjection(container.repository.projections, planningMonth, projectionSettings, listOf(ledgerSnapshot, planningEvent, commitmentEvent))
+  } else ProjectionLoading()
   val saved = rememberSaveable(saver = mapSaver(save = { it.toMap() }, restore = { mutableStateMapOf<String, String>().apply { putAll(it.mapValues { e -> e.value as String }) } })) { mutableStateMapOf<String, String>() }
   val drafts = remember(saved) { Drafts(saved) }
   drafts.scope = if(screen.startsWith("f06") || screen.startsWith("f07")) "$screen:$subject:$planningMonth" else "$screen:$subject"
@@ -156,9 +161,10 @@ internal class Drafts(val values: MutableMap<String, String>) {
    Box(Modifier.fillMaxSize().background(Scheme.background).padding(padding), contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
     Column(Modifier.widthIn(max = 800.dp).fillMaxWidth().verticalScroll(scroll).imePadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
      Text("WealthWard", style = MaterialTheme.typography.labelLarge)
-     if (screen.isNotEmpty()) TextButton(onClick = { back() }, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text("← Volver · conservar borrador") }
+     if (screen.isNotEmpty()) TextButton(onClick = { back() }, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text(if (screen == "f08") "← Volver al plan" else "← Volver · conservar borrador") }
      Text(when {
       screen.isEmpty() -> Tabs[selected]
+      screen == "f08" -> "Pronóstico de cierre"
       screen.startsWith("f06") -> f06Title(screen)
       screen.startsWith("f07") -> f07Title(screen)
       else -> actionTitle(screen)
@@ -170,7 +176,12 @@ internal class Drafts(val values: MutableMap<String, String>) {
       Text(commitmentError, color = Scheme.error, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
      }
      if (screen.isNotEmpty()) {
-      if(screen.startsWith("f06")) F06Form(screen,subject,planningMonth,plan,snapshot,drafts,busy,{ failure=it },::submitPlan,{ back() })
+      if (screen == "f08") {
+       ProjectionScreen(planningMonth, projection, projectionSettings, {
+        projectionPreferences.saveLimits(it)
+        projectionSettings = it
+       }, plan, commitmentPlan, snapshot, ::open)
+      } else if(screen.startsWith("f06")) F06Form(screen,subject,planningMonth,plan,snapshot,drafts,busy,{ failure=it },::submitPlan,{ back() })
       else if(screen.startsWith("f07")) F07Form(screen,subject,planningMonth,commitmentPlan,snapshot,drafts,busy,{ failure=it },::submitCommitment,{ back() })
       else F05Form(screen, subject, snapshot, drafts, busy, onError = { failure = it }, onSubmit = ::submit, onCancel = { back() }, preview = { rows -> repository.previewImport(rows) })
      } else when (selected) {
@@ -184,7 +195,9 @@ internal class Drafts(val values: MutableMap<String, String>) {
        }
        Action("Asignar dinero a un propósito") { open("reserve") }
        Action("Registrar gasto") { open("expense") }
-       PlanningDashboard(planningMonth,{ planningMonth=it },plan,snapshot,::open,::submitPlan)
+       PlanningDashboard(planningMonth,{ planningMonth=it },plan,snapshot,::open,::submitPlan) {
+        ProjectionDashboard(planningMonth, projection) { open("f08") }
+       }
       }
       1 -> {
        Action("Registrar gasto") { open("expense") }; Action("Registrar ingreso") { open("income") }

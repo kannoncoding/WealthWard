@@ -24,6 +24,7 @@ class FinanceRepository(private val db: WealthDatabase) {
     val workspace = F05Repository(db)
     val planning = F06Repository(db)
     val commitments = F07Repository(db)
+    val projections = F08Repository(db)
     val dashboard: Flow<DashboardSnapshot> = combine(dao.observeAccounts(), dao.observePostingCount()) { _, _ -> DashboardSnapshot(balances()) }
     suspend fun accounts() = dao.accounts()
     suspend fun savePlan(period: FinancePeriodEntity, version: PlanVersionEntity, lines: List<PlanLineEntity>) = db.withTransaction {

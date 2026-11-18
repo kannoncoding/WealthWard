@@ -20,6 +20,12 @@ app/src/main/java/io/github/kannoncoding/wealthward/data/F07Repository.kt
 app/src/main/java/io/github/kannoncoding/wealthward/data/F07Codec.kt
 app/src/androidTest/java/io/github/kannoncoding/wealthward/data/F07PersistenceTest.kt
 app/src/main/java/io/github/kannoncoding/wealthward/data/F07Savings.kt
+app/src/androidTest/java/io/github/kannoncoding/wealthward/ui/F08UiTest.kt
+app/src/androidTest/java/io/github/kannoncoding/wealthward/data/F08PersistenceTest.kt
+app/src/test/java/io/github/kannoncoding/wealthward/domain/F08ProjectionTest.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/F08Screens.kt
+app/src/main/java/io/github/kannoncoding/wealthward/domain/F08.kt
+app/src/main/java/io/github/kannoncoding/wealthward/data/F08Repository.kt
 app/src/main/java/io/github/kannoncoding/wealthward/domain/F06.kt
 app/src/main/java/io/github/kannoncoding/wealthward/data/F06Repository.kt
 app/src/test/java/io/github/kannoncoding/wealthward/domain/F06PlanningTest.kt

@@ -18,13 +18,14 @@ internal fun natureName(value: PlanNature) = when(value) {
 }
 internal fun f06Title(action:String) = mapOf("f06salary" to "Configurar ingreso neto", "f06extra" to "Ingreso extraordinario esperado", "f06template" to "Obligación recurrente", "f06budget" to "Presupuesto por periodo", "f06pay" to "Confirmar pago o ingreso real", "f06confirm" to "Confirmar importe real", "f06fund" to "Financiar reserva anual", "f06purpose" to "Aportar a reserva anual", "f06financing" to "Periodo de financiación", "f06copy" to "Preparar otro periodo", "f06reminders" to "Recordatorios locales", "f06link" to "Vincular movimiento existente")[action] ?: action
 
-@Composable internal fun PlanningDashboard(month:String, changeMonth:(String)->Unit, plan:F06Snapshot, ledger:F05Snapshot, open:(String,String)->Unit, execute:(F06Command)->Unit) {
+@Composable internal fun PlanningDashboard(month:String, changeMonth:(String)->Unit, plan:F06Snapshot, ledger:F05Snapshot, open:(String,String)->Unit, execute:(F06Command)->Unit, projection: @Composable () -> Unit = {}) {
  var monthDraft by androidx.compose.runtime.saveable.rememberSaveable(month) { mutableStateOf(month) }
  var monthError by remember { mutableStateOf("") }
  OutlinedTextField(monthDraft, { monthDraft=it; monthError="" }, label={ Text("Periodo · AAAA-MM") })
  Action("Ver periodo") { runCatching { YearMonth.parse(monthDraft).toString() }.onSuccess { changeMonth(it) }.onFailure { monthError="Mes inválido. Usa AAAA-MM." } }
  if(monthError.isNotEmpty()) Text(monthError,color=MaterialTheme.colorScheme.error)
  Text("Periodo mostrado: $month")
+ projection()
  Action("Abrir / sincronizar periodo") { execute(F06Command.OpenPeriod(newId(),month)) }
  Action("Editar presupuesto y meta T") { open("f06budget","") }
  Action("Preparar / copiar periodo") { open("f06copy","") }
