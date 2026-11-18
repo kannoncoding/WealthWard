@@ -31,7 +31,12 @@ internal fun f06Title(action:String) = mapOf("f06salary" to "Configurar ingreso 
  Text("Presupuesto / Real / Diferencia", style=MaterialTheme.typography.titleLarge)
  Text("Diferencia = presupuesto menos real. Un valor negativo indica exceso. Las reservas financiadas se muestran separadas del gasto; transferencias propias no son gasto.")
  plan.comparisons.forEach { row ->
-  InfoCard("${row.group} · ${natureName(row.nature)} · ${row.currency}", "Presupuesto ${money(row.budgetMinor,row.currency)}\nReal pagado ${money(row.actualMinor,row.currency)}\nConsumo económico ${money(row.consumptionMinor,row.currency)}\nDiferencia de caja ${money(row.differenceMinor,row.currency)}", 2)
+  val usage = when(row.nature) {
+   PlanNature.SAVING -> "Aporte financiado"
+   PlanNature.DEBT -> "Aplicado a deuda"
+   else -> "Consumo económico"
+  }
+  InfoCard("${row.group} · ${natureName(row.nature)} · ${row.currency}", "Presupuesto ${money(row.budgetMinor,row.currency)}\nReal pagado ${money(row.actualMinor,row.currency)}\n$usage ${money(row.consumptionMinor,row.currency)}\nDiferencia de caja ${money(row.differenceMinor,row.currency)}", 2)
   if(row.nature in setOf(PlanNature.VARIABLE_NEED,PlanNature.FREE)) {
    val remaining=BigDecimal.valueOf(row.budgetMinor,2).subtract(BigDecimal.valueOf(row.consumptionMinor,2))
    Text("Restante por consumo: ${row.currency} ${remaining.toPlainString()}${if(remaining.signum()<0) " · Exceso de presupuesto" else ""}")
@@ -60,13 +65,19 @@ internal fun f06Title(action:String) = mapOf("f06salary" to "Configurar ingreso 
  Text("Cada fecha conserva su obligación original. Los vencidos pendientes siguen visibles al cambiar de mes.")
  plan.occurrences.filter { it.nominalMonth==month || (it.nominalMonth<month && it.pendingMinor>0) }.sortedWith(compareBy({it.dueDate},{it.id})).forEach { occurrence ->
   val account=ledger.accounts.find { it.id==occurrence.suggestedAccountId }
-  InfoCard("${occurrence.dueDate} · ${occurrence.name}", "${natureName(occurrence.nature)} · ${occurrence.group}\nCuenta sugerida: ${account?.name ?: "Sin elegir"}\nEstimado ${money(occurrence.expectedMinor,occurrence.currency)}\nConfirmado ${occurrence.confirmedMinor?.let { money(it,occurrence.currency) } ?: "Por confirmar"}\nReal pagado ${money(occurrence.cashPaidMinor,occurrence.currency)}\nConsumo vinculado ${money(occurrence.paidMinor,occurrence.currency)}\nTu pendiente ${money(occurrence.pendingMinor,occurrence.currency)} · ${if(occurrence.pendingMinor==0L && occurrence.paidMinor==0L) "Sin saldo pendiente" else if(occurrence.pendingMinor==0L) if(occurrence.nature==PlanNature.INCOME) "Recibido" else "Pagado" else if(occurrence.overdue) "Vencido" else if(occurrence.paidMinor>0) "Parcial" else "Pendiente"}", if(occurrence.overdue) 1 else 3)
+  val termDebt = occurrence.templateId.startsWith("term-debt:")
+  val applied = if(termDebt) "Aplicado a cuota" else "Consumo vinculado"
+  InfoCard("${occurrence.dueDate} · ${occurrence.name}", "${natureName(occurrence.nature)} · ${occurrence.group}\nCuenta sugerida: ${account?.name ?: "Sin elegir"}\nEstimado ${money(occurrence.expectedMinor,occurrence.currency)}\nConfirmado ${occurrence.confirmedMinor?.let { money(it,occurrence.currency) } ?: "Por confirmar"}\nReal pagado ${money(occurrence.cashPaidMinor,occurrence.currency)}\n$applied ${money(occurrence.paidMinor,occurrence.currency)}\nTu pendiente ${money(occurrence.pendingMinor,occurrence.currency)} · ${if(occurrence.pendingMinor==0L && occurrence.paidMinor==0L) "Sin saldo pendiente" else if(occurrence.pendingMinor==0L) if(occurrence.nature==PlanNature.INCOME) "Recibido" else "Pagado" else if(occurrence.overdue) "Vencido" else if(occurrence.paidMinor>0) "Parcial" else "Pendiente"}", if(occurrence.overdue) 1 else 3)
   if(occurrence.pendingMinor>0) {
+   if(termDebt) {
+    Action("Pagar cuota · ${occurrence.name}") { open("f07installment", "${occurrence.nominalMonth}/${occurrence.templateId.removePrefix("term-debt:")}") }
+   } else {
    Action(if(occurrence.nature==PlanNature.INCOME) "Registrar recepción · ${occurrence.name}" else "Pagar · ${occurrence.name}") { open("f06pay",occurrence.id) }
    Action("Confirmar importe · ${occurrence.name}") { open("f06confirm",occurrence.id) }
    Action("Vincular movimiento · ${occurrence.name}") { open("f06link",occurrence.id) }
   Action("Cambiar periodo de financiación · ${occurrence.name}") { open("f06financing",occurrence.id) }
    if(occurrence.purposeId!=null) Action("Financiar reserva · ${occurrence.name}") { open("f06fund",occurrence.id) }
+   }
   }
  }
  if(plan.occurrences.isEmpty()) Text("Sin vencimientos generados. Abre el periodo después de configurar ingresos y obligaciones.")
@@ -77,7 +88,6 @@ internal fun f06Title(action:String) = mapOf("f06salary" to "Configurar ingreso 
  Action("Gastos fijos · configurar") { open("f06template","FIXED") }
  Action("Suscripciones / apps · configurar") { open("f06template","SUBSCRIPTION") }
  Action("Deudas · cuentas de crédito") { open("payment","") }
- Text("Las tarjetas se gestionan con compras y pagos vinculados. La amortización avanzada de préstamos corresponde a F07.")
  Action("Ahorros · propósitos y reservas") { open("reserve","") }
  Action("Cuentas · crear producto") { open("account","") }
  Action("Ingreso extraordinario · configurar") { open("f06extra","") }

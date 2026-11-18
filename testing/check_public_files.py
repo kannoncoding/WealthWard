@@ -10,6 +10,16 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = set("""
+app/src/androidTest/java/io/github/kannoncoding/wealthward/ui/F07UiTest.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/F07Screens.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/F07Forms.kt
+app/src/main/java/io/github/kannoncoding/wealthward/domain/F07.kt
+app/src/main/java/io/github/kannoncoding/wealthward/data/F07Schedule.kt
+app/src/main/java/io/github/kannoncoding/wealthward/data/F07Restore.kt
+app/src/main/java/io/github/kannoncoding/wealthward/data/F07Repository.kt
+app/src/main/java/io/github/kannoncoding/wealthward/data/F07Codec.kt
+app/src/androidTest/java/io/github/kannoncoding/wealthward/data/F07PersistenceTest.kt
+app/src/main/java/io/github/kannoncoding/wealthward/data/F07Savings.kt
 app/src/main/java/io/github/kannoncoding/wealthward/domain/F06.kt
 app/src/main/java/io/github/kannoncoding/wealthward/data/F06Repository.kt
 app/src/test/java/io/github/kannoncoding/wealthward/domain/F06PlanningTest.kt

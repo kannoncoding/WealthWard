@@ -13,15 +13,32 @@ class F06Repository(private val db:WealthDatabase) {
  val observe=dao.observeWorkspace().map { snapshot() }
  suspend fun snapshot(month:String=YearMonth.now(BusinessTime.zone).toString()):F06Snapshot=db.withTransaction {
   val state=load(); val p=planning(state); val ops=ledger.snapshot().operations
-  val occurrences=p.rows("occurrences").filter { !it.optBoolean("suppressed") }.map { occurrence(it,ops) }
+  val occurrences=p.rows("occurrences").filter { !it.optBoolean("suppressed") }.map { occurrence(it,ops) } + commitmentInstallments(state,month)
   val plans=p.rows("plans").map(::plan)
   val latest=plans.filter { it.month==month }.maxByOrNull { it.version }
   val planGroups=latest?.rows?.groupBy { Triple(it.group,it.nature,it.currency) } ?: emptyMap()
   val occurrenceGroups=occurrences.filter { it.financingMonth==month }.groupBy { Triple(it.group,it.nature,it.currency) }
   val actualGroups=occurrences.filter { cashActual(it.paymentIds,ops,month)!=0L }.map { Triple(it.group,it.nature,it.currency) }.toSet()
-  val comparison=(planGroups.keys+occurrenceGroups.keys+actualGroups).map { key ->
+  val externalSavingIds=state.commitments().f07Rows("savingEvents").filter { it.getString("action")==SavingAction.EXTERNAL.name }.mapNotNull { it.f07Text("operationId") }.toSet()
+  val savings=commitmentSavings(state,month)
+  val external=commitmentExternalSpending(state,month)
+  val extras=state.commitments().f07Rows("payments").filter { !it.optBoolean("voided") }.map { it.debtPayment() }
+      .filter { it.extra && it.date.startsWith(month) }.groupBy { payment -> state.commitments().f07Row("debts",payment.debtId).debt().let { Triple(it.group,PlanNature.DEBT,it.currency) } }
+      .mapValues { (_,payments) -> checkedSum(payments.map { it.totalMinor }) }
+  val projects=state.commitments()
+  val projectGroups=projects.f07Rows("projectPayments").groupBy { payment ->
+   val item=projects.f07Row("items",payment.getString("itemId")).projectItem()
+   projects.f07Row("projects",item.projectId).project().let { Triple(it.group,PlanNature.FIXED,it.currency) }
+  }.mapValues { (_,links) -> links.map { it.getString("operationId") } }
+  val classifiedProjects=projectGroups.values.flatten()
+  val comparison=(planGroups.keys+occurrenceGroups.keys+actualGroups+savings.keys+external.keys+extras.keys+projectGroups.keys).map { key ->
    val rows=planGroups[key] ?: emptyList()
-   var budget=if(rows.isEmpty()) checkedSum(occurrenceGroups[key].orEmpty().map { it.expectedMinor }) else checkedSum(rows.map { it.minor })
+   val plannedSavings=savings[key]
+   var budget=when {
+    plannedSavings!=null -> plannedSavings.first
+    rows.isEmpty() || (key.second==PlanNature.DEBT && key in occurrenceGroups) -> checkedSum(occurrenceGroups[key].orEmpty().map { it.expectedMinor })
+    else -> checkedSum(rows.map { it.minor })
+   }
    if(rows.any { it.accumulate }) {
     fun unused(previous:String,depth:Int):Long {
      if(depth>1200) fail("Accumulation history exceeds supported range")
@@ -29,15 +46,23 @@ class F06Repository(private val db:WealthDatabase) {
      val oldRows=old.rows.filter { Triple(it.group,it.nature,it.currency)==key && it.accumulate }
      if(oldRows.isEmpty()) return 0
      val carry=unused(YearMonth.parse(previous).minusMonths(1).toString(),depth+1)
-     return maxOf(0,Math.subtractExact(Math.addExact(checkedSum(oldRows.map { it.minor }),carry),variableActual(ops,occurrences,previous,key,oldRows.map { it.name }.toSet())))
+     return maxOf(0,Math.subtractExact(Math.addExact(checkedSum(oldRows.map { it.minor }),carry),variableActual(ops.filter { it.id !in externalSavingIds },occurrences,previous,key,oldRows.map { it.name }.toSet(),classifiedProjects=classifiedProjects)))
     }
     budget=Math.addExact(budget,unused(YearMonth.parse(month).minusMonths(1).toString(),0))
    }
-   val actual=if(key.second in setOf(PlanNature.VARIABLE_NEED,PlanNature.FREE)) variableActual(ops,occurrences,month,key,rows.map { it.name }.toSet(),cashOnly=true) else checkedSum(occurrences.filter { Triple(it.group,it.nature,it.currency)==key }.map { cashActual(it.paymentIds,ops,month,key.third) })
-   val consumed=if(key.second in setOf(PlanNature.VARIABLE_NEED,PlanNature.FREE)) variableActual(ops,occurrences,month,key,rows.map { it.name }.toSet()) else checkedSum(occurrenceGroups[key].orEmpty().map { it.paidMinor })
-   BudgetComparison(key.first,key.second,key.third,budget,actual,Math.subtractExact(budget,actual),consumed)
+   val actual=if(plannedSavings!=null) 0L else if(key.second in setOf(PlanNature.VARIABLE_NEED,PlanNature.FREE)) variableActual(ops.filter { it.id !in externalSavingIds },occurrences,month,key,rows.map { it.name }.toSet(),cashOnly=true,classifiedProjects=classifiedProjects) else checkedSum(occurrences.filter { Triple(it.group,it.nature,it.currency)==key }.map { cashActual(it.paymentIds,ops,month,key.third) })
+   val consumed=if(plannedSavings!=null) plannedSavings.second else if(key.second in setOf(PlanNature.VARIABLE_NEED,PlanNature.FREE)) variableActual(ops.filter { it.id !in externalSavingIds },occurrences,month,key,rows.map { it.name }.toSet(),classifiedProjects=classifiedProjects) else checkedSum(occurrenceGroups[key].orEmpty().map { it.paidMinor })
+   val supplementaryActual=external[key] ?: extras[key] ?: 0L
+   val projectPayments=projectGroups[key].orEmpty()
+   val projectCash=cashActual(projectPayments,ops,month,key.third)
+   val projectSpending=checkedSum(ops.filter { !it.voided && (it.bookedDate ?: it.date).startsWith(month) }.map {
+    if(it.id in projectPayments || (it.type=="REFUND" && it.originalId in projectPayments)) it.expenseMinor else 0L
+   })
+   val cashTotal=checkedSum(listOf(actual,supplementaryActual,projectCash))
+   BudgetComparison(key.first,key.second,key.third,budget,cashTotal,Math.subtractExact(budget,cashTotal),
+    checkedSum(listOf(consumed,supplementaryActual,projectSpending)))
   }
-  val eligible=ops.filter { it.type in setOf("INCOME","EXPENSE","REFUND","CREDIT_PAYMENT","FX_CREDIT_PAYMENT") }.map { it.id }.toSet()
+  val eligible=ops.filter { it.type in setOf("INCOME","EXPENSE","REFUND","CREDIT_PAYMENT","FX_CREDIT_PAYMENT","DEBT_PAYMENT") }.map { it.id }.toSet()
   val feeParents=ops.filter { it.feeMinor>0 }.map { it.id }.toSet()
   val reversals=ops.filter { it.type=="REVERSAL" && (it.originalId in eligible || it.originalId in feeParents) }.map { it.id }.toSet()
   val tx=dao.transactions().filter { it.confirmed && it.businessDate.startsWith(month) && (it.id in eligible || it.id in reversals) }.map { it.id }.toSet()
@@ -65,15 +90,15 @@ class F06Repository(private val db:WealthDatabase) {
   val owned=descendants(ids,ops)
   return checkedSum(ops.filter { !it.voided && (month==null || (it.bookedDate ?: it.date).startsWith(month)) && (currency==null || currencyCache[it.accountId]==currency.name) }.map { op ->
    when {
-    op.id in owned && op.type in setOf("EXPENSE","INCOME") -> op.amountMinor
+    op.id in owned && op.type in setOf("EXPENSE","INCOME","DEBT_PAYMENT") -> op.amountMinor
     op.type=="REFUND" && op.originalId in owned && ops.find { it.id==op.originalId }?.type=="EXPENSE" -> -op.amountMinor
     op.type in setOf("CREDIT_PAYMENT","FX_CREDIT_PAYMENT") -> checkedSum(op.creditAllocations.filter { it.purchaseId in owned }.map { it.sourceMinor ?: it.minor })
     else -> 0
    }
   })
  }
- private fun variableActual(ops:List<OperationDetail>,occ:List<PlannedOccurrence>,month:String,key:Triple<String,PlanNature,Currency>,categories:Set<String>,cashOnly:Boolean=false):Long {
-  val linked=descendants(occ.flatMap { it.paymentIds },ops)
+ private fun variableActual(ops:List<OperationDetail>,occ:List<PlannedOccurrence>,month:String,key:Triple<String,PlanNature,Currency>,categories:Set<String>,cashOnly:Boolean=false,classifiedProjects:List<String> = emptyList()):Long {
+  val linked=descendants(occ.flatMap { it.paymentIds } + classifiedProjects,ops)
   fun amount(o:OperationDetail,minor:Long):Long {
    if(currencyCache[o.accountId]!=key.third.name || o.id in linked) return 0
    if(o.splits.isEmpty()) return if(o.category in categories) minor else 0
@@ -130,7 +155,7 @@ class F06Repository(private val db:WealthDatabase) {
     // F05 has saved the shared document: reload before adding the link, never overwrite it with stale JSON.
     state=load(); p=planning(state); findOccurrence(p,c.occurrenceId).getJSONArray("paymentIds").put(operationId)
    }
-   is F06Command.LinkPayment -> { val o=findOccurrence(p,c.occurrenceId); val ops=ledger.snapshot().operations; val v=occurrence(o,ops); val op=ops.find { it.id==c.operationId } ?: fail("Unknown payment"); val a=dao.accounts().first { it.id==op.accountId }; if(op.voided || op.type !in (if(v.nature==PlanNature.INCOME) setOf("INCOME") else setOf("EXPENSE","CREDIT_PURCHASE")) || a.currency!=v.currency.name || descendants(p.rows("occurrences").flatMap { it.getJSONArray("paymentIds").strings() },ops).contains(op.id)) fail("Movement is not eligible or is already allocated"); if(net(op.id,ops)>v.pendingMinor) fail("Movement exceeds pending amount"); o.getJSONArray("paymentIds").put(op.id) }
+   is F06Command.LinkPayment -> { val o=findOccurrence(p,c.occurrenceId); val ops=ledger.snapshot().operations; val v=occurrence(o,ops); val op=ops.find { it.id==c.operationId } ?: fail("Unknown payment"); if(state.commitments().f07Rows("savingEvents").any { it.f07Text("operationId")==op.id } || state.commitments().f07Rows("projectPayments").any { it.getString("operationId")==op.id }) fail("This movement already belongs to a saving or project"); val a=dao.accounts().first { it.id==op.accountId }; if(op.voided || op.type !in (if(v.nature==PlanNature.INCOME) setOf("INCOME") else setOf("EXPENSE","CREDIT_PURCHASE")) || a.currency!=v.currency.name || descendants(p.rows("occurrences").flatMap { it.getJSONArray("paymentIds").strings() },ops).contains(op.id)) fail("Movement is not eligible or is already allocated"); if(net(op.id,ops)>v.pendingMinor) fail("Movement exceeds pending amount"); o.getJSONArray("paymentIds").put(op.id) }
    is F06Command.ExtraordinaryIncome -> { YearMonth.parse(c.month); LocalDate.parse(c.dueDate); positive(c.expectedMinor); account(c.accountId,c.currency); val id="extra:"+c.id; if(p.rows("occurrences").any { it.getString("id")==id }) fail("Income already exists"); p.appendRow("occurrences",newOccurrence(id,c.id,1,c.month,0,c.name,"Income",PlanNature.INCOME,c.currency,c.dueDate,c.expectedMinor,c.accountId,null)) }
    is F06Command.FundAnnual -> { positive(c.minor); val o=findOccurrence(p,c.occurrenceId); val purpose=o.nullText("purposeId") ?: fail("This occurrence has no annual purpose"); val v=occurrence(o,ledger.snapshot().operations); account(c.accountId,v.currency); ledger.execute(F05Command.FundReserve(c.requestId+":ledger",c.accountId,purpose,v.name,c.minor)); state=load(); p=planning(state) }
    is F06Command.AssignFundingPeriod -> { YearMonth.parse(c.month); findOccurrence(p,c.occurrenceId).put("financingMonth",c.month) }
@@ -222,7 +247,7 @@ internal fun validatePlanningRestore(state:JSONObject,accounts:List<AccountEntit
 
 private fun checkedSum(values:Iterable<Long>):Long = try { values.fold(java.math.BigInteger.ZERO) { n,v -> n.add(java.math.BigInteger.valueOf(v)) }.longValueExact() } catch (_:ArithmeticException) { fail("Amount exceeds integer minor-unit range") }
 
-private fun canonicalPlanning(value:Any?):Any = when(value) {
+internal fun canonicalPlanning(value:Any?):Any = when(value) {
  null -> JSONObject.NULL
  is String,is Boolean,is Number -> value
  is Enum<*> -> value.name

@@ -84,3 +84,13 @@
 !/.github/workflows/
 !/.github/workflows/android.yml
 !/app/src/main/res/xml/data_extraction_rules.xml
+!/app/src/androidTest/java/io/github/kannoncoding/wealthward/ui/F07UiTest.kt
+!/app/src/main/java/io/github/kannoncoding/wealthward/ui/F07Screens.kt
+!/app/src/main/java/io/github/kannoncoding/wealthward/ui/F07Forms.kt
+!/app/src/main/java/io/github/kannoncoding/wealthward/domain/F07.kt
+!/app/src/main/java/io/github/kannoncoding/wealthward/data/F07Schedule.kt
+!/app/src/main/java/io/github/kannoncoding/wealthward/data/F07Restore.kt
+!/app/src/main/java/io/github/kannoncoding/wealthward/data/F07Repository.kt
+!/app/src/main/java/io/github/kannoncoding/wealthward/data/F07Codec.kt
+!/app/src/androidTest/java/io/github/kannoncoding/wealthward/data/F07PersistenceTest.kt
+!/app/src/main/java/io/github/kannoncoding/wealthward/data/F07Savings.kt

@@ -16,7 +16,7 @@ import org.json.JSONObject
 class F05Repository(private val db: WealthDatabase) {
  private val dao = db.ledger()
  val observe: Flow<F05Snapshot> = combine(dao.observeAccounts(), dao.observePostingCount(), dao.observeWorkspace()) { _, _, _ -> snapshot() }
- suspend fun snapshot(): F05Snapshot = db.withTransaction { snapshot(load()) }
+ suspend fun snapshot(): F05Snapshot = db.withTransaction { snapshot(load(), includeTermDebts = false) }
  private suspend fun load() = JSONObject(dao.workspaceState()?.payload ?: EMPTY_STATE)
  private fun invalid(message: String): Nothing = throw DomainFailure.Invalid(message)
  private fun date(value: String): LocalDate = try { LocalDate.parse(value) } catch (_: Exception) { invalid("Use an ISO calendar date") }
@@ -33,17 +33,18 @@ class F05Repository(private val db: WealthDatabase) {
  private fun meta(state: JSONObject, account: AccountEntity): JSONObject = state.find("accounts",account.id) ?: obj("id" to account.id,"productId" to account.id,"openingDate" to null,"archived" to false)
  private suspend fun account(id: String, state: JSONObject, active: Boolean = true): AccountEntity {
   val value = dao.accounts().find { it.id == id } ?: invalid("Unknown account")
+  if(value.kind=="TERM_DEBT") invalid("Use the term-debt workspace")
   if(active && meta(state,value).getBoolean("archived")) invalid("Archived accounts cannot receive new operations")
   return value
  }
- private suspend fun snapshot(state: JSONObject): F05Snapshot {
+ private suspend fun snapshot(state: JSONObject, includeTermDebts: Boolean = true): F05Snapshot {
   val operations = state.list("operations").map { operation(it) }
   val recs = state.list("reconciliations").map { reconciliation(it) }
   val reserves = state.list("reserves").map { ReserveBalance(it.getString("accountId"),it.getString("purposeId"),it.getString("name"),it.getLong("minor")) }
   val holds = state.list("holds").map { HoldDetail(it.getString("id"),it.getString("accountId"),it.getLong("minor"),it.getString("merchant"),it.getString("date"),it.getString("status")) }
   val transactions = dao.transactions().filter { it.confirmed }.map { it.id }.toSet()
   val postings = dao.postings()
-  val accounts = dao.accounts().map { a ->
+  val accounts = dao.accounts().filter { includeTermDebts || it.kind != "TERM_DEBT" }.map { a ->
    val m = meta(state,a)
    val balance = exact(postings.filter { it.accountId == a.id && it.transactionId in transactions }.fold(BigInteger.valueOf(a.openingMinor)) { n,p -> n.add(BigInteger.valueOf(p.minor)) })
    val funded = reserves.filter { it.accountId == a.id }
@@ -55,11 +56,19 @@ class F05Repository(private val db: WealthDatabase) {
  }
  private fun operation(o: JSONObject) = OperationDetail(o.getString("id"),o.getString("date"),o.getString("type"),o.getString("accountId"),o.text("destinationId"),o.getLong("amountMinor"),o.longOrNull("destinationMinor"),o.getString("merchant"),o.getString("category"),o.getString("notes"),o.list("splits").map { ExpenseSplit(it.getString("category"),it.getLong("minor"),it.text("purposeId")) },o.text("originalId"),o.getBoolean("voided"),o.getLong("refundedMinor"),o.getLong("expenseMinor"),o.optLong("feeMinor"),o.text("rate"),o.text("rateSource"),o.optString("bookedDate",o.getString("date")),o.optString("rateDate",o.getString("date")),o.optString("fundingAccountId").takeIf { it.isNotBlank() && it!="null" },o.optString("fundingPurposeId").takeIf { it.isNotBlank() && it!="null" },o.optLong("settledMinor"),o.optJSONArray("creditAllocations")?.let { a -> (0 until a.length()).map { i -> val e=a.getJSONObject(i); CreditPaymentAllocation(e.getString("purchaseId"),e.getLong("minor"),e.text("purposeId"),e.getLong("sourceMinor")) } } ?: emptyList())
  private fun reconciliation(o: JSONObject) = ReconciliationDetail(o.getString("id"),o.getString("accountId"),o.getString("cutDate"),o.getString("balanceType"),o.getLong("observedMinor"),o.getLong("recordedMinor"),o.getLong("differenceMinor"),(0 until o.getJSONArray("reviewedIds").length()).map { o.getJSONArray("reviewedIds").getString(it) },o.getString("status"),o.getString("reason"))
- suspend fun execute(command: F05Command): String = db.withTransaction {
+ suspend fun execute(command: F05Command): String = execute(command, false)
+
+ internal suspend fun executeCommitment(command: F05Command): String {
+  if(dao.request(command.requestId)!=null) invalid("Ledger link already exists")
+  return execute(command, true)
+ }
+
+ private suspend fun execute(command: F05Command, commitment: Boolean): String = db.withTransaction {
   if(command.requestId.isBlank()) invalid("A stable request key is required")
-  val fingerprint = canonical(command).toString()
+  val fingerprint = canonicalLedgerCommand(command).toString()
   dao.request(command.requestId)?.let { if(it.fingerprint != fingerprint) invalid("Request key already used for different content"); return@withTransaction it.result }
   val state = load()
+  if(!commitment) validateCommitmentBoundary(command,state)
   apply(command,state)
   validatePlanningRestore(state,dao.accounts())
   snapshot(state) // Reconstruct all balances before any commit, with checked integer arithmetic.
@@ -92,7 +101,8 @@ class F05Repository(private val db: WealthDatabase) {
    is F05Command.Redistribute -> {
     positive(c.amountMinor)
     fund(state,c.accountId,c.fromPurposeId,"",-c.amountMinor)
-    fund(state,c.accountId,c.toPurposeId,c.toName,c.amountMinor)
+    // The destination allocation replaces the released reserve within the same cash account.
+    fund(state,c.accountId,c.toPurposeId,c.toName,c.amountMinor,reallocated=true)
    }
    is F05Command.Void -> reverse(state,c.operationId,c.requestId,c.reason)
    is F05Command.Correct -> {
@@ -125,6 +135,53 @@ class F05Repository(private val db: WealthDatabase) {
    is F05Command.ImportBatch -> import(c,state)
   }
  }
+ private fun validateCommitmentBoundary(command: F05Command, state: JSONObject) {
+  val purposes=when(command) {
+   is F05Command.FundReserve -> listOf(command.purposeId)
+   is F05Command.Redistribute -> listOf(command.fromPurposeId,command.toPurposeId)
+   is F05Command.Transfer -> listOfNotNull(command.purposeId)
+   is F05Command.ImportBatch -> command.rows.mapNotNull { it.purposeId }
+   else -> emptyList()
+  }
+  if(purposes.any { it.startsWith("saving-goal:") }) invalid("Use the savings workspace for this reserve")
+  val changedOperation = when(command) {
+   is F05Command.Void -> command.operationId
+   is F05Command.Correct -> command.operationId
+   is F05Command.Refund -> command.operationId
+   else -> null
+  }
+  if(changedOperation!=null) {
+   val commitments=state.commitments()
+   if(commitments.f07Rows("savingEvents").any { it.f07Text("operationId")==changedOperation })
+    invalid("This movement is linked to a dated savings event")
+   if(command is F05Command.Correct && commitments.f07Rows("projectPayments").any { it.getString("operationId")==changedOperation })
+    invalid("Reverse the project payment and record the correction through the project")
+  }
+ }
+
+ internal suspend fun postDebtPayment(state:JSONObject, debt:Debt, payment:DebtPayment, id:String) {
+  val cash=account(payment.accountId,state)
+  val liability=dao.accounts().firstOrNull { it.id==debtAccount(debt.id) } ?: invalid("Unknown term debt")
+  val day=date(payment.date)
+  if(cash.kind!="CASH" || cash.currency!=liability.currency || day<date(debt.openingDate) ||
+     meta(state,cash).text("openingDate")?.let { day<date(it) }==true) invalid("Choose eligible cash in the native currency")
+  val legs=listOf(cash to -payment.totalMinor) +
+      listOfNotNull((liability to payment.principalMinor).takeIf { payment.principalMinor>0 })
+  val expense=add(payment.interestMinor,payment.chargesMinor)
+  post(id,payment.date,"DEBT_PAYMENT",legs,expense)
+  state.appendRow("operations",op(id,payment.date,"DEBT_PAYMENT",cash.id,payment.totalMinor,
+    debt.name,debt.name,expense=expense,destination=liability.id,destinationMinor=payment.principalMinor))
+  invalidateReconciliations(state,id)
+ }
+
+ internal suspend fun postDebtVerification(state:JSONObject, debt:Debt, verification:CreditorBalance, delta:Long, id:String) {
+  if(delta==0L) return
+  val liability=dao.accounts().first { it.id==debtAccount(debt.id) }
+  post(id,verification.date,"DEBT_ADJUSTMENT",listOf(liability to delta),0)
+  state.appendRow("operations",op(id,verification.date,"DEBT_ADJUSTMENT",liability.id,delta,
+    debt.name,debt.name,notes=verification.reference))
+ }
+
  private suspend fun post(id: String, day: String, type: String, legs: List<Pair<AccountEntity,Long>>, expense: Long, bookedDate: String = day) {
   date(day); date(bookedDate)
   if(legs.isEmpty() || legs.any { it.second==0L }) invalid("Nonzero postings required")
@@ -225,10 +282,10 @@ class F05Repository(private val db: WealthDatabase) {
   if(r==null) { if(name.isBlank() || p.isBlank()) invalid("Purpose name and identity required"); state.appendRow("reserves",obj("id" to "$a:$p","accountId" to a,"purposeId" to p,"name" to name,"minor" to delta)) }
   else r.put("minor",add(r.getLong("minor"),delta))
  }
- private suspend fun fund(state:JSONObject,a:String,p:String,name:String,delta:Long) {
+ private suspend fun fund(state:JSONObject,a:String,p:String,name:String,delta:Long,reallocated:Boolean=false) {
   val account=account(a,state); if(account.kind!="CASH" || delta==0L || p.isBlank()) invalid("Reserve funding requires a cash account and nonzero amount")
   val detail=snapshot(state).accounts.first { it.id==a }
-  if(delta>0 && detail.unassignedMinor<delta) invalid("Insufficient unassigned money for a new reserve")
+  if(delta>0 && !reallocated && detail.unassignedMinor<delta) invalid("Insufficient unassigned money for a new reserve")
   val current=reserve(state,a,p)?.getLong("minor") ?: 0
   if(add(current,delta)<0) invalid("Cannot release more than the funded reserve")
   changeReserve(state,a,p,name,delta)
@@ -245,13 +302,17 @@ class F05Repository(private val db: WealthDatabase) {
    (r.getString("accountId")==o.getString("accountId") || r.getString("accountId")==o.text("destinationId")) && date(r.getString("cutDate"))>=date(o.optString("bookedDate",o.getString("date")))
   }.forEach { it.put("status","INVALIDATED") }
  }
- private suspend fun reverse(state:JSONObject,id:String,key:String,reason:String) {
+ internal suspend fun reverseDebtPayment(state:JSONObject, id:String, key:String, reason:String) =
+  reverse(state,id,key,reason,allowDebt=true)
+
+ private suspend fun reverse(state:JSONObject,id:String,key:String,reason:String,allowDebt:Boolean=false) {
   if(reason.isBlank()) invalid("A correction reason is required")
   val o=state.find("operations",id) ?: invalid("Unknown operation")
   if(o.optLong("settledMinor")>0) invalid("Reverse linked payments before correcting the purchase")
   if(o.has("feeParent")) invalid("Correct the parent transfer to change its separate fee")
   if(o.getBoolean("voided") || o.getLong("refundedMinor")>0) invalid("Already voided or refunded; cannot reverse")
-  if(o.getString("type") !in setOf("EXPENSE","INCOME","CREDIT_PURCHASE","TRANSFER","FX_TRANSFER","CREDIT_PAYMENT","FX_CREDIT_PAYMENT")) invalid("This operation cannot be reversed")
+  if(o.getString("type") !in setOf("EXPENSE","INCOME","CREDIT_PURCHASE","TRANSFER","FX_TRANSFER","CREDIT_PAYMENT","FX_CREDIT_PAYMENT") &&
+     !(allowDebt && o.getString("type")=="DEBT_PAYMENT")) invalid("This operation cannot be reversed")
   val p=dao.postings().filter { it.transactionId==id || it.transactionId=="$id:fee" }
   val accounts=dao.accounts().associateBy { it.id }
   post(key,o.getString("date"),"REVERSAL",p.map { accounts.getValue(it.accountId) to sub(0,it.minor) },-add(o.getLong("expenseMinor"),o.optLong("feeMinor")),o.optString("bookedDate",o.getString("date")))
@@ -353,12 +414,6 @@ class F05Repository(private val db: WealthDatabase) {
     state.appendRow("imports",obj("id" to "${c.requestId}:${r.rowId}","rowId" to r.rowId,"accountId" to a.id,"rawAccount" to r.rawAccount,"rawContent" to r.rawContent,"rawNotes" to r.rawNotes,"editedContent" to r.editedContent,"editedNotes" to r.editedNotes,"confirmedOpeningMinor" to r.confirmedOpeningMinor,"openingDate" to r.openingDate))
    }
   }
- } private fun canonical(value: Any?): Any = when(value) {
-  null -> JSONObject.NULL
-  is String, is Number, is Boolean -> value
-  is Enum<*> -> value.name
-  is Iterable<*> -> JSONArray(value.map { canonical(it) })
-  else -> JSONObject().apply { put("_type",value.javaClass.simpleName); value.javaClass.declaredFields.filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }.sortedBy { it.name }.forEach { field -> field.isAccessible=true; put(field.name,canonical(field.get(value))) } }
  }
  companion object {
   const val EMPTY_STATE = "{\"accounts\":[],\"operations\":[],\"reserves\":[],\"holds\":[],\"reconciliations\":[],\"audit\":[],\"imports\":[]}"
@@ -369,6 +424,7 @@ class F05Repository(private val db: WealthDatabase) {
    fun JSONObject.integer(key:String):Long { val n=get(key); if(n !is Int && n !is Long) fail(); return (n as Number).toLong() }
    val state=JSONObject(payload)
    validatePlanningRestore(state,accounts)
+   validateCommitmentRestore(state,requests,accounts,transactions,postings)
    val accountMap=accounts.associateBy { it.id }; val tx=transactions.associateBy { it.id }
    val names=listOf("accounts","operations","reserves","holds","reconciliations","audit","imports")
    names.forEach { key ->
@@ -462,7 +518,7 @@ class F05Repository(private val db: WealthDatabase) {
     val refunds=operations.filter { it.getString("type")=="REFUND" && it.getString("originalId")==o.getString("id") }.fold(BigInteger.ZERO) { n,r -> n.add(BigInteger.valueOf(r.integer("amountMinor"))) }
     if(refunds!=BigInteger.valueOf(o.integer("refundedMinor"))) fail()
    }
-   transactions.filter { it.type in setOf("FX_TRANSFER","FX_CREDIT_PAYMENT","REFUND","REVERSAL","ADJUSTMENT") }.forEach { if(it.id !in operationIds) fail() }
+   transactions.filter { it.type in setOf("FX_TRANSFER","FX_CREDIT_PAYMENT","REFUND","REVERSAL","ADJUSTMENT","DEBT_PAYMENT","DEBT_ADJUSTMENT") }.forEach { if(it.id !in operationIds) fail() }
    val reserves=state.getJSONArray("reserves").rows()
    if(reserves.map { it.getString("accountId") to it.getString("purposeId") }.distinct().size!=reserves.size) fail()
    reserves.forEach { r -> if(accountMap[r.getString("accountId")]?.kind!="CASH" || r.getString("purposeId").isBlank() || r.getString("name").isBlank() || r.integer("minor")<0) fail() }
@@ -491,12 +547,10 @@ class F05Repository(private val db: WealthDatabase) {
  }
 }
 
-
-
-
-
-
-
-
-
-
+internal fun canonicalLedgerCommand(value: Any?): Any = when(value) {
+  null -> JSONObject.NULL
+  is String, is Number, is Boolean -> value
+  is Enum<*> -> value.name
+  is Iterable<*> -> JSONArray(value.map { canonicalLedgerCommand(it) })
+  else -> JSONObject().apply { put("_type",value.javaClass.simpleName); value.javaClass.declaredFields.filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }.sortedBy { it.name }.forEach { field -> field.isAccessible=true; put(field.name,canonicalLedgerCommand(field.get(value))) } }
+ }

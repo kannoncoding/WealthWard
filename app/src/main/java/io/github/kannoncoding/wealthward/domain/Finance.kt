@@ -32,7 +32,7 @@ object BusinessTime {
     val zone: ZoneId = ZoneId.of("America/Costa_Rica")
     fun date(instant: Instant): LocalDate = instant.atZone(zone).toLocalDate()
 }
-enum class FinancialType { INCOME, EXPENSE, TRANSFER, CREDIT_PURCHASE, CREDIT_PAYMENT, FX_TRANSFER, FX_CREDIT_PAYMENT, REVERSAL, REFUND, ADJUSTMENT }
+enum class FinancialType { INCOME, EXPENSE, TRANSFER, CREDIT_PURCHASE, CREDIT_PAYMENT, FX_TRANSFER, FX_CREDIT_PAYMENT, REVERSAL, REFUND, ADJUSTMENT, DEBT_PAYMENT, DEBT_ADJUSTMENT }
 data class PostingLeg(val accountId: String, val amount: Money)
 data class PostingRequest(
     val id: String, val occurredAt: Instant, val date: LocalDate,

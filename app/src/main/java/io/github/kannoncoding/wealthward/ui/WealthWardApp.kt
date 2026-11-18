@@ -52,15 +52,32 @@ internal class Drafts(val values: MutableMap<String, String>) {
  MaterialTheme(colorScheme = Scheme) {
   val scope = rememberCoroutineScope()
   val repository = container.repository.workspace
-  val snapshot by repository.observe.collectAsStateWithLifecycle(initialValue = F05Snapshot())
+  val ledgerSnapshot by repository.observe.collectAsStateWithLifecycle(initialValue = F05Snapshot())
+  val snapshot = remember(ledgerSnapshot) {
+   ledgerSnapshot.copy(accounts = ledgerSnapshot.accounts.filter { it.kind != "TERM_DEBT" })
+  }
   val planning = container.repository.planning
   val planningEvent by planning.observe.collectAsStateWithLifecycle(initialValue = F06Snapshot())
+  val commitments = container.repository.commitments
+  val commitmentEvent by commitments.observe.collectAsStateWithLifecycle(initialValue = null)
   var planningMonth by rememberSaveable { mutableStateOf(java.time.YearMonth.now(BusinessTime.zone).toString()) }
   var loadedPlan by remember { mutableStateOf<F06Snapshot?>(null) }
   val plan = loadedPlan ?: F06Snapshot()
+  var commitmentPlan by remember { mutableStateOf(F07Snapshot()) }
+  var commitmentError by remember { mutableStateOf("") }
   val context = androidx.compose.ui.platform.LocalContext.current
   val reminders = remember(context) { io.github.kannoncoding.wealthward.notifications.LocalReminders(context) }
   LaunchedEffect(planningEvent, planningMonth, snapshot) { runCatching { planning.snapshot(planningMonth) }.onSuccess { loadedPlan = it } }
+  LaunchedEffect(commitmentEvent, planningMonth, snapshot) {
+   try {
+    commitmentPlan = commitments.snapshot(planningMonth)
+    commitmentError = ""
+   } catch (e: kotlinx.coroutines.CancellationException) {
+    throw e
+   } catch (e: Exception) {
+    commitmentError = "No se pudieron cargar las deudas, metas y proyectos."
+   }
+  }
   LaunchedEffect(loadedPlan) {
    val reminderPlan = loadedPlan ?: return@LaunchedEffect
    reminders.save(io.github.kannoncoding.wealthward.notifications.ReminderPreferences(reminderPlan.reminders.enabled, reminderPlan.reminders.daysBefore, reminderPlan.reminders.hour))
@@ -83,7 +100,7 @@ internal class Drafts(val values: MutableMap<String, String>) {
   var ready by remember { mutableStateOf(false) }
   val saved = rememberSaveable(saver = mapSaver(save = { it.toMap() }, restore = { mutableStateMapOf<String, String>().apply { putAll(it.mapValues { e -> e.value as String }) } })) { mutableStateMapOf<String, String>() }
   val drafts = remember(saved) { Drafts(saved) }
-  drafts.scope = if(screen.startsWith("f06")) "$screen:$subject:$planningMonth" else "$screen:$subject"
+  drafts.scope = if(screen.startsWith("f06") || screen.startsWith("f07")) "$screen:$subject:$planningMonth" else "$screen:$subject"
   val errorFocus = remember { FocusRequester() }
   val largeText = LocalDensity.current.fontScale > 1.3f
   LaunchedEffect(container) { try { container.initializeDemo(); ready = true } catch (e: Exception) { failure = "No se pudieron abrir los datos: ${e.message}" } }
@@ -109,6 +126,25 @@ internal class Drafts(val values: MutableMap<String, String>) {
     finally { busy = false }
    }
   }
+  fun submitCommitment(command: F07Command) {
+   if (busy) return
+   busy = true; failure = ""
+   scope.launch {
+    try {
+     commitments.execute(command)
+     drafts.clear()
+     success = "Guardado."
+     screen = ""; subject = ""
+    } catch (e: kotlinx.coroutines.CancellationException) {
+     throw e
+    } catch (e: Exception) {
+     failure = userError(e)
+    } finally {
+     busy = false
+    }
+   }
+  }
+  val scroll = key(selected, screen, subject, accountId) { rememberScrollState() }
   Scaffold(bottomBar = {
    if (screen.isEmpty() && largeText) Row(Modifier.fillMaxWidth().background(Scheme.surface).navigationBarsPadding().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     Tabs.forEachIndexed { index, title -> FilterChip(selected = selected == index, onClick = { selected = index; accountId = ""; failure = "" }, label = { Text(title) }, modifier = Modifier.heightIn(min = 48.dp)) }
@@ -118,15 +154,24 @@ internal class Drafts(val values: MutableMap<String, String>) {
    } }
   }) { padding ->
    Box(Modifier.fillMaxSize().background(Scheme.background).padding(padding), contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
-    Column(Modifier.widthIn(max = 800.dp).fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(Modifier.widthIn(max = 800.dp).fillMaxWidth().verticalScroll(scroll).imePadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
      Text("WealthWard", style = MaterialTheme.typography.labelLarge)
      if (screen.isNotEmpty()) TextButton(onClick = { back() }, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text("← Volver · conservar borrador") }
-     Text(if (screen.isEmpty()) Tabs[selected] else if(screen.startsWith("f06")) f06Title(screen) else actionTitle(screen), style = MaterialTheme.typography.headlineMedium)
+     Text(when {
+      screen.isEmpty() -> Tabs[selected]
+      screen.startsWith("f06") -> f06Title(screen)
+      screen.startsWith("f07") -> f07Title(screen)
+      else -> actionTitle(screen)
+     }, style = MaterialTheme.typography.headlineMedium)
      if (!ready || busy) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Procesando" })
      if (failure.isNotEmpty()) Text(failure, color = Scheme.error, modifier = Modifier.focusRequester(errorFocus).focusable().semantics { liveRegion = LiveRegionMode.Assertive })
      if (success.isNotEmpty()) Text(success, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+     if (commitmentError.isNotEmpty() && (screen.startsWith("f07") || screen.isEmpty() && selected in listOf(0, 3, 4))) {
+      Text(commitmentError, color = Scheme.error, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+     }
      if (screen.isNotEmpty()) {
       if(screen.startsWith("f06")) F06Form(screen,subject,planningMonth,plan,snapshot,drafts,busy,{ failure=it },::submitPlan,{ back() })
+      else if(screen.startsWith("f07")) F07Form(screen,subject,planningMonth,commitmentPlan,snapshot,drafts,busy,{ failure=it },::submitCommitment,{ back() })
       else F05Form(screen, subject, snapshot, drafts, busy, onError = { failure = it }, onSubmit = ::submit, onCancel = { back() }, preview = { rows -> repository.previewImport(rows) })
      } else when (selected) {
       0 -> {
@@ -134,7 +179,8 @@ internal class Drafts(val values: MutableMap<String, String>) {
        Currency.entries.forEach { currency ->
         val cash = snapshot.accounts.filter { !it.archived && it.currency == currency && it.kind != "LIABILITY" }
         val debt = snapshot.accounts.filter { !it.archived && it.currency == currency && it.kind == "LIABILITY" }
-        InfoCard(currency.name, "Dinero propio $currency ${total(cash.map { it.balanceMinor })}\nReservas $currency ${total(cash.map { it.reservedMinor })}\nSin asignar $currency ${total(cash.map { it.unassignedMinor })}\nDeuda $currency ${BigDecimal(total(debt.filter { it.balanceMinor < 0 }.map { it.balanceMinor })).negate().toPlainString()}\nSaldo a favor en tarjetas $currency ${total(debt.filter { it.balanceMinor > 0 }.map { it.balanceMinor })}", 2)
+        val termPrincipal = commitmentPlan.debts.filter { it.debt.currency == currency }.map { it.principalMinor }
+        InfoCard(currency.name, "Dinero propio $currency ${total(cash.map { it.balanceMinor })}\nReservas $currency ${total(cash.map { it.reservedMinor })}\nSin asignar $currency ${total(cash.map { it.unassignedMinor })}\nDeuda de tarjetas $currency ${BigDecimal(total(debt.filter { it.balanceMinor < 0 }.map { it.balanceMinor })).negate().toPlainString()}\nPrincipal de deudas a plazo $currency ${total(termPrincipal)}\nSaldo a favor en tarjetas $currency ${total(debt.filter { it.balanceMinor > 0 }.map { it.balanceMinor })}", 2)
        }
        Action("Asignar dinero a un propósito") { open("reserve") }
        Action("Registrar gasto") { open("expense") }
@@ -170,6 +216,7 @@ internal class Drafts(val values: MutableMap<String, String>) {
           Action("Gestionar reserva de esta cuenta") { open("reserve", account.id) }
          }
          if (!account.archived && account.kind == "LIABILITY") Action("Registrar compra en esta tarjeta") { open("credit", account.id) }
+         if (account.kind == "LIABILITY") CreditStatementCards(commitmentPlan, snapshot, account.id, ::open)
          snapshot.reconciliations.filter { it.accountId == account.id }.forEach { comparison ->
           InfoCard("Corte ${comparison.cutDate} · ${comparison.status}", "${comparison.balanceType}\nObservado ${money(comparison.observedMinor, account.currency)}\nRegistrado ${money(comparison.recordedMinor, account.currency)}\nDiferencia ${money(comparison.differenceMinor, account.currency)}\n${comparison.reason}", 3)
           if (comparison.balanceType == "BOOKED" && comparison.status == "DIFFERENCE") Action("Resolver diferencia con ajuste explícito") { open("resolve", comparison.id) }
@@ -187,6 +234,7 @@ internal class Drafts(val values: MutableMap<String, String>) {
        }
       }
       3 -> {
+       SavingAndProjectCards(commitmentPlan, snapshot, ::open)
        Text("Propósitos con dinero existente", style = MaterialTheme.typography.titleMedium)
        Action("Asignar o crear propósito") { open("reserve") }; Action("Liberar reserva") { open("release") }
        Action("Redistribuir entre propósitos") { open("redistribute") }; Action("Mover reserva a otra cuenta") { open("moveReserve") }
@@ -197,6 +245,7 @@ internal class Drafts(val values: MutableMap<String, String>) {
        if (snapshot.accounts.none { it.reserves.isNotEmpty() }) Text("Aún no hay reservas. Asigna dinero disponible para comenzar.")
       }
       4 -> {
+       TermDebtCards(commitmentPlan, snapshot, ::open)
        PlanningConfiguration(plan,::open)
        Action("Importación asistida · pegar tabla") { open("import") }
        InfoCard("Datos locales", "La app funciona sin conexión bancaria. La importación solicita cuenta, importe y confirmación; las notas no se convierten en dinero.", 3)
@@ -248,7 +297,7 @@ internal class Drafts(val values: MutableMap<String, String>) {
   operation.creditAllocations.forEach { allocation -> Text("Aplicado a ${snapshot.operations.find { it.id == allocation.purchaseId }?.merchant ?: "Compra"}: ${decimal(allocation.minor)} · " + if (allocation.purposeId == null) "Sin asignar" else "Reserva financiada") }
   if (operation.splits.isNotEmpty()) operation.splits.forEach { Text("${it.category}: ${decimal(it.minor)}", style = MaterialTheme.typography.bodySmall) }
   val feeChild = operation.id.endsWith(":fee")
-  if (!operation.voided && !feeChild && operation.type !in listOf("REFUND", "REVERSAL", "ADJUSTMENT")) {
+  if (!operation.voided && !feeChild && operation.type !in listOf("REFUND", "REVERSAL", "ADJUSTMENT", "DEBT_PAYMENT", "DEBT_ADJUSTMENT", "DEBT_REVERSAL")) {
    if (operation.type in listOf("EXPENSE", "INCOME", "CREDIT_PURCHASE")) Action("Editar movimiento", onClick = { open("correct", operation.id) })
    Action("Anular movimiento", onClick = { open("void", operation.id) })
    if (operation.type in listOf("EXPENSE", "CREDIT_PURCHASE")) Action("Reembolso parcial", onClick = { open("refund", operation.id) })

@@ -23,6 +23,7 @@ class FinanceRepository(private val db: WealthDatabase) {
     private val dao = db.ledger()
     val workspace = F05Repository(db)
     val planning = F06Repository(db)
+    val commitments = F07Repository(db)
     val dashboard: Flow<DashboardSnapshot> = combine(dao.observeAccounts(), dao.observePostingCount()) { _, _ -> DashboardSnapshot(balances()) }
     suspend fun accounts() = dao.accounts()
     suspend fun savePlan(period: FinancePeriodEntity, version: PlanVersionEntity, lines: List<PlanLineEntity>) = db.withTransaction {
@@ -47,6 +48,9 @@ class FinanceRepository(private val db: WealthDatabase) {
     }
     suspend fun post(request: PostingRequest) = db.withTransaction {
         request.validate()
+        if (request.type in setOf(FinancialType.DEBT_PAYMENT, FinancialType.DEBT_ADJUSTMENT) ||
+            dao.accounts().any { account -> account.kind == "TERM_DEBT" && request.legs.any { it.accountId == account.id } })
+            throw DomainFailure.Invalid("Use the term-debt workspace")
         request.periodId?.let {
             val period = dao.period(it) ?: throw DomainFailure.Invalid("Unknown financial period")
             if (request.date < LocalDate.parse(period.startsOn) || request.date > LocalDate.parse(period.endsOn)) throw DomainFailure.Invalid("Posting falls outside period")
@@ -120,7 +124,7 @@ class FinanceRepository(private val db: WealthDatabase) {
                 Currency.valueOf(p.getString("currency"))
                 PostingEntity(p.getString("id"), p.getString("transactionId"), p.getString("accountId"), p.strictLong("minor"), p.getString("currency"))
             }
-            if(accounts.any { it.id.isBlank() || it.name.isBlank() || it.creditLimitMinor < 0 || it.kind !in setOf("CASH", "LIABILITY") } || accounts.map { it.id }.distinct().size != accounts.size || transactions.map { it.id }.distinct().size != transactions.size || postings.any { it.id.isBlank() } || postings.map { it.id }.distinct().size != postings.size) throw DomainFailure.Invalid("Invalid fixture identities")
+            if(accounts.any { it.id.isBlank() || it.name.isBlank() || it.creditLimitMinor < 0 || it.kind !in setOf("CASH", "LIABILITY", "TERM_DEBT") } || accounts.map { it.id }.distinct().size != accounts.size || transactions.map { it.id }.distinct().size != transactions.size || postings.any { it.id.isBlank() } || postings.map { it.id }.distinct().size != postings.size) throw DomainFailure.Invalid("Invalid fixture identities")
             postings.forEach { p ->
                 if (accounts.none { it.id == p.accountId && it.currency == p.currency } || transactions.none { it.id == p.transactionId } || p.minor == 0L) throw DomainFailure.Invalid("Invalid fixture references")
             }
@@ -216,6 +220,20 @@ private fun validateAccounts(request: PostingRequest, accountList: List<AccountE
         val account = accounts[it.accountId] ?: throw DomainFailure.Invalid("Unknown account")
         if (account.currency != it.amount.currency.name) throw DomainFailure.CurrencyMismatch()
     }
+    if (request.type == FinancialType.DEBT_PAYMENT) {
+        val cash = request.legs.singleOrNull { accounts.getValue(it.accountId).kind == "CASH" }
+        val principal = request.legs.singleOrNull { accounts.getValue(it.accountId).kind == "TERM_DEBT" }
+        if (cash == null || cash.amount.minor >= 0 || cash.amount.minor == Long.MIN_VALUE ||
+            request.legs.size != if (principal == null) 1 else 2)
+            throw DomainFailure.Invalid("Invalid term debt payment legs")
+        if (principal != null && (principal.amount.minor <= 0 || principal.amount.currency != cash.amount.currency))
+            throw DomainFailure.Invalid("Invalid term debt principal")
+        if (Math.addExact(request.expenseMinor, principal?.amount?.minor ?: 0L) != -cash.amount.minor)
+            throw DomainFailure.Invalid("Term debt payment components must equal cash paid")
+    }
+    if (request.type == FinancialType.DEBT_ADJUSTMENT &&
+        (request.expenseMinor != 0L || request.legs.size != 1 || accounts.getValue(request.legs.single().accountId).kind != "TERM_DEBT"))
+        throw DomainFailure.Invalid("Term debt adjustment requires one liability leg")
     if (request.type == FinancialType.INCOME && (request.expenseMinor != 0L || request.legs.any { accounts.getValue(it.accountId).kind != "CASH" || it.amount.minor <= 0 }))
         throw DomainFailure.Invalid("Income must increase cash and cannot count as expense")
     if (request.type == FinancialType.EXPENSE) {
