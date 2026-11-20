@@ -426,6 +426,7 @@ class F05Repository(private val db: WealthDatabase) {
    validatePlanningRestore(state,accounts)
    validateCommitmentRestore(state,requests,accounts,transactions,postings)
    val accountMap=accounts.associateBy { it.id }; val tx=transactions.associateBy { it.id }
+   val postingsByTransaction=postings.groupBy { it.transactionId }
    val names=listOf("accounts","operations","reserves","holds","reconciliations","audit","imports")
    names.forEach { key ->
     val rows=state.getJSONArray(key).rows()
@@ -435,24 +436,26 @@ class F05Repository(private val db: WealthDatabase) {
     }
    }
    val operations=state.getJSONArray("operations").rows(); val operationIds=operations.map { it.getString("id") }.toSet()
+   val reconciliations=state.getJSONArray("reconciliations").rows().associateBy { it.getString("id") }
+   val refundsByOriginal=operations.filter { it.getString("type")=="REFUND" }.groupBy { it.getString("originalId") }
    state.getJSONArray("accounts").rows().forEach { m ->
     if(m.getString("id") !in accountMap || m.getString("productId").isBlank()) fail()
     m.getBoolean("archived"); if(!m.isNull("openingDate")) LocalDate.parse(m.getString("openingDate"))
    }
    operations.forEach { o ->
     val id=o.getString("id"); val a=accountMap[o.getString("accountId")] ?: fail()
-    val t=tx[id] ?: fail(); if(t.type!=o.getString("type") || t.businessDate!=o.optString("bookedDate",o.getString("date")) || t.expenseMinor!=o.integer("expenseMinor")) fail()
+    val t=tx[id] ?: fail(); if(!t.confirmed || t.type!=o.getString("type") || t.businessDate!=o.optString("bookedDate",o.getString("date")) || t.expenseMinor!=o.integer("expenseMinor")) fail()
     if(BusinessTime.date(Instant.parse(t.occurredAt))!=LocalDate.parse(o.getString("date"))) fail()
     LocalDate.parse(o.optString("bookedDate",o.getString("date"))); LocalDate.parse(o.getString("date")); o.getBoolean("voided")
     val amount=o.integer("amountMinor"); val refunded=o.integer("refundedMinor"); val fee=o.integer("feeMinor")
     if(refunded<0 || (refunded>0 && refunded>amount) || fee<0) fail()
     listOf("merchant","category","notes").forEach { o.getString(it) }
     if(!o.isNull("destinationId") && o.getString("destinationId") !in accountMap) fail()
-    if(!o.isNull("originalId") && o.getString("originalId") !in operationIds && state.getJSONArray("reconciliations").rows().none { it.getString("id")==o.getString("originalId") }) fail()
+    if(!o.isNull("originalId") && o.getString("originalId") !in operationIds && o.getString("originalId") !in reconciliations) fail()
     val splits=o.getJSONArray("splits").rows()
     if(splits.any { it.integer("minor")<=0 || it.getString("category").isBlank() }) fail()
     if(splits.isNotEmpty() && splits.fold(BigInteger.ZERO) { n,s -> n.add(BigInteger.valueOf(s.integer("minor"))) }!=BigInteger.valueOf(amount)) fail()
-    val legs=postings.filter { it.transactionId==id }
+    val legs=postingsByTransaction[id].orEmpty()
     if(legs.isEmpty()) fail()
     if(t.type in setOf("FX_TRANSFER","FX_CREDIT_PAYMENT")) {
      if(legs.size!=2 || legs.map { it.currency }.distinct().size!=2 || legs.none { it.minor<0 && it.accountId==a.id } || o.getString("rateSource").isBlank() || BigDecimal(o.getString("rate")).signum()<=0) fail()
@@ -462,9 +465,15 @@ class F05Repository(private val db: WealthDatabase) {
    val settled=mutableMapOf<String,BigInteger>()
    operations.forEach { o ->
     val id=o.getString("id");val type=o.getString("type");val amount=o.integer("amountMinor")
-    val legs=postings.filter { it.transactionId==id }
+    val legs=postingsByTransaction[id].orEmpty()
     fun aggregate(ps:List<PostingEntity>)=ps.groupBy { it.accountId }.mapValues { (_,v) -> v.fold(BigInteger.ZERO) { n,p -> n.add(BigInteger.valueOf(p.minor)) } }.filterValues { it!=BigInteger.ZERO }
     when(type) {
+     "INCOME","EXPENSE","CREDIT_PURCHASE" -> {
+      val posting=legs.singleOrNull() ?: fail()
+      val income=type=="INCOME"
+      if(amount<=0 || posting.accountId!=o.getString("accountId") ||
+       posting.minor!=(if(income) amount else -amount) || o.integer("expenseMinor")!=(if(income) 0L else amount)) fail()
+     }
      "TRANSFER","FX_TRANSFER","CREDIT_PAYMENT","FX_CREDIT_PAYMENT" -> {
       val source=accountMap[o.getString("accountId")] ?: fail();val destination=accountMap[o.getString("destinationId")] ?: fail()
       if(source.kind!="CASH" || amount<=0 || legs.size!=2 || legs.none { it.accountId==source.id && it.minor==-amount } || legs.none { it.accountId==destination.id && it.minor==o.integer("destinationMinor") }) fail()
@@ -491,11 +500,12 @@ class F05Repository(private val db: WealthDatabase) {
      }
      "REVERSAL" -> {
       val original=byId[o.getString("originalId")] ?: fail()
-      val originalLegs=postings.filter { it.transactionId==original.getString("id") || it.transactionId==original.getString("id")+":fee" }
+      val originalLegs=postingsByTransaction[original.getString("id")].orEmpty() +
+          postingsByTransaction[original.getString("id")+":fee"].orEmpty()
       if(!original.getBoolean("voided") || amount!=original.integer("amountMinor") || aggregate(legs)!=aggregate(originalLegs).mapValues { it.value.negate() }) fail()
      }
      "ADJUSTMENT" -> {
-      val rec=state.getJSONArray("reconciliations").rows().find { it.getString("id")==o.getString("originalId") } ?: fail()
+      val rec=reconciliations[o.getString("originalId")] ?: fail()
       if(legs.size!=1 || legs.single().minor!=amount || rec.integer("differenceMinor")!=amount || o.getString("notes").isBlank() || o.integer("expenseMinor")!=0L) fail()
      }
     }
@@ -515,7 +525,7 @@ class F05Repository(private val db: WealthDatabase) {
       if(funding.kind!="CASH" || funding.currency!=accountMap.getValue(o.getString("accountId")).currency) fail()
      }
     }
-    val refunds=operations.filter { it.getString("type")=="REFUND" && it.getString("originalId")==o.getString("id") }.fold(BigInteger.ZERO) { n,r -> n.add(BigInteger.valueOf(r.integer("amountMinor"))) }
+    val refunds=refundsByOriginal[o.getString("id")].orEmpty().fold(BigInteger.ZERO) { n,r -> n.add(BigInteger.valueOf(r.integer("amountMinor"))) }
     if(refunds!=BigInteger.valueOf(o.integer("refundedMinor"))) fail()
    }
    transactions.filter { it.type in setOf("FX_TRANSFER","FX_CREDIT_PAYMENT","REFUND","REVERSAL","ADJUSTMENT","DEBT_PAYMENT","DEBT_ADJUSTMENT") }.forEach { if(it.id !in operationIds) fail() }
@@ -540,8 +550,8 @@ class F05Repository(private val db: WealthDatabase) {
     r.integer("confirmedOpeningMinor"); LocalDate.parse(r.getString("openingDate"))
     listOf("rawAccount","rawContent","rawNotes").forEach { r.getString(it) }
    }
-   val requestIds=requests.map { it.id }
-   if(requestIds.any { it.isBlank() } || requestIds.distinct().size!=requestIds.size || requests.any { it.result!=it.id || JSONObject(it.fingerprint).getString("requestId")!=it.id }) fail()
+   val requestIds=requests.mapTo(mutableSetOf()) { it.id }
+   if(requestIds.any { it.isBlank() } || requestIds.size!=requests.size || requests.any { it.result!=it.id || JSONObject(it.fingerprint).getString("requestId")!=it.id }) fail()
    state.getJSONArray("audit").rows().forEach { r -> if(r.getString("requestId") !in requestIds || r.getString("action").isBlank()) fail(); r.getString("subjectId"); r.getString("reason") }
   }
  }

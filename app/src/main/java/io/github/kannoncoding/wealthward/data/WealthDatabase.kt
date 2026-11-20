@@ -58,7 +58,9 @@ interface LedgerDao {
     @Query("SELECT * FROM workspace_requests ORDER BY id") suspend fun requests(): List<WorkspaceRequestEntity>
     @Insert suspend fun insertRequest(value: WorkspaceRequestEntity)
     @Query("DELETE FROM workspace_requests") suspend fun clearRequests()
-    @Query("DELETE FROM workspace_state") suspend fun clearWorkspace()
+    @Query("DELETE FROM workspace_state WHERE id='main'") suspend fun clearWorkspace()
+    @Query("SELECT payload FROM workspace_state WHERE id='projection_limits'") suspend fun projectionLimits(): String?
+    @Query("SELECT payload FROM workspace_state WHERE id='projection_limits'") fun observeProjectionLimits(): Flow<String?>
 
     @Query("SELECT * FROM accounts ORDER BY id") suspend fun accounts(): List<AccountEntity>
     @Query("SELECT * FROM accounts ORDER BY id") fun observeAccounts(): Flow<List<AccountEntity>>

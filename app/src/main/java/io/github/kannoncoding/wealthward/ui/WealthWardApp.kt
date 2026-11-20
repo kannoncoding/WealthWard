@@ -23,6 +23,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.kannoncoding.wealthward.data.AppContainer
 import io.github.kannoncoding.wealthward.domain.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
@@ -98,8 +99,9 @@ internal class Drafts(val values: MutableMap<String, String>) {
   var success by rememberSaveable { mutableStateOf("") }
   var busy by remember { mutableStateOf(false) }
   var ready by remember { mutableStateOf(false) }
-  val projectionPreferences = projectionPreferences()
-  var projectionSettings by rememberProjectionSettings(planningMonth, projectionPreferences)
+  val projectionLimits by container.files.projectionLimits.collectAsStateWithLifecycle(emptyMap())
+  var projectionDraft by rememberProjectionSettings(planningMonth)
+  val projectionSettings = projectionDraft.copy(limits = projectionLimits)
   val projection = if (ready && selected == 0 && (screen.isEmpty() || screen == "f08")) {
    loadProjection(container.repository.projections, planningMonth, projectionSettings, listOf(ledgerSnapshot, planningEvent, commitmentEvent))
   } else ProjectionLoading()
@@ -107,9 +109,16 @@ internal class Drafts(val values: MutableMap<String, String>) {
   val drafts = remember(saved) { Drafts(saved) }
   drafts.scope = if(screen.startsWith("f06") || screen.startsWith("f07")) "$screen:$subject:$planningMonth" else "$screen:$subject"
   val errorFocus = remember { FocusRequester() }
+  val exportMessages = remember { SnackbarHostState() }
   val largeText = LocalDensity.current.fontScale > 1.3f
   LaunchedEffect(container) { try { container.initializeDemo(); ready = true } catch (e: Exception) { failure = "No se pudieron abrir los datos: ${e.message}" } }
   LaunchedEffect(failure) { if (failure.isNotEmpty()) runCatching { errorFocus.requestFocus() } }
+  LaunchedEffect(screen, failure, success) {
+   val message = failure.ifEmpty { success }
+   if (screen == "f10Summary" && message.isNotEmpty()) {
+    exportMessages.showSnackbar(message, withDismissAction = true, duration = SnackbarDuration.Long)
+   }
+  }
   fun open(action: String, id: String = "") { screen = action; subject = id; failure = ""; success = "" }
   fun back() { if (!busy) { screen = ""; subject = ""; failure = "" } }
   BackHandler(screen.isNotEmpty()) { back() }
@@ -150,7 +159,7 @@ internal class Drafts(val values: MutableMap<String, String>) {
    }
   }
   val scroll = key(selected, screen, subject, accountId) { rememberScrollState() }
-  Scaffold(bottomBar = {
+  Scaffold(snackbarHost = { SnackbarHost(exportMessages) }, bottomBar = {
    if (screen.isEmpty() && largeText) Row(Modifier.fillMaxWidth().background(Scheme.surface).navigationBarsPadding().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     Tabs.forEachIndexed { index, title -> FilterChip(selected = selected == index, onClick = { selected = index; accountId = ""; failure = "" }, label = { Text(title) }, modifier = Modifier.heightIn(min = 48.dp)) }
    }
@@ -161,26 +170,46 @@ internal class Drafts(val values: MutableMap<String, String>) {
    Box(Modifier.fillMaxSize().background(Scheme.background).padding(padding), contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
     Column(Modifier.widthIn(max = 800.dp).fillMaxWidth().verticalScroll(scroll).imePadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
      Text("WealthWard", style = MaterialTheme.typography.labelLarge)
-     if (screen.isNotEmpty()) TextButton(onClick = { back() }, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text(if (screen == "f08") "← Volver al plan" else "← Volver · conservar borrador") }
+     if (screen.isNotEmpty()) TextButton(onClick = { back() }, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) {
+      Text(when {
+       screen == "f08" -> "← Volver al plan"
+       screen.startsWith("f10") -> "← Volver a Config"
+       else -> "← Volver · conservar borrador"
+      })
+     }
      Text(when {
       screen.isEmpty() -> Tabs[selected]
       screen == "f08" -> "Pronóstico de cierre"
+      screen == "f10Backup" -> "Crear respaldo"
+      screen == "f10Restore" -> "Restaurar desde respaldo"
+      screen == "f10Summary" -> "Exportar resumen"
       screen.startsWith("f06") -> f06Title(screen)
       screen.startsWith("f07") -> f07Title(screen)
       else -> actionTitle(screen)
      }, style = MaterialTheme.typography.headlineMedium)
      if (!ready || busy) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Procesando" })
-     if (failure.isNotEmpty()) Text(failure, color = Scheme.error, modifier = Modifier.focusRequester(errorFocus).focusable().semantics { liveRegion = LiveRegionMode.Assertive })
-     if (success.isNotEmpty()) Text(success, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+     if (screen != "f10Summary" && failure.isNotEmpty()) Text(failure, color = Scheme.error, modifier = Modifier.focusRequester(errorFocus).focusable().semantics { liveRegion = LiveRegionMode.Assertive })
+     if (screen != "f10Summary" && success.isNotEmpty()) Text(success, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
      if (commitmentError.isNotEmpty() && (screen.startsWith("f07") || screen.isEmpty() && selected in listOf(0, 3, 4))) {
       Text(commitmentError, color = Scheme.error, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
      }
      if (screen.isNotEmpty()) {
       if (screen == "f08") {
        ProjectionScreen(planningMonth, projection, projectionSettings, {
-        projectionPreferences.saveLimits(it)
-        projectionSettings = it
+        val updated = it
+        scope.launch {
+         try {
+          container.files.saveProjectionLimits(updated.base, updated.limits.getValue(updated.base))
+          projectionDraft = updated
+         } catch (e: CancellationException) {
+          throw e
+         } catch (_: Exception) {
+          failure = "No se pudieron guardar los ajustes del pronóstico."
+         }
+        }
        }, plan, commitmentPlan, snapshot, ::open)
+      } else if (screen.startsWith("f10")) {
+       if (ready) F10Screen(screen, container.files, busy, { busy = it }, { failure = it }, { success = it })
       } else if(screen.startsWith("f06")) F06Form(screen,subject,planningMonth,plan,snapshot,drafts,busy,{ failure=it },::submitPlan,{ back() })
       else if(screen.startsWith("f07")) F07Form(screen,subject,planningMonth,commitmentPlan,snapshot,drafts,busy,{ failure=it },::submitCommitment,{ back() })
       else F05Form(screen, subject, snapshot, drafts, busy, onError = { failure = it }, onSubmit = ::submit, onCancel = { back() }, preview = { rows -> repository.previewImport(rows) })
@@ -261,6 +290,7 @@ internal class Drafts(val values: MutableMap<String, String>) {
        TermDebtCards(commitmentPlan, snapshot, ::open)
        PlanningConfiguration(plan,::open)
        Action("Importación asistida · pegar tabla") { open("import") }
+       if (ready) F10Configuration { open(it) }
        InfoCard("Datos locales", "La app funciona sin conexión bancaria. La importación solicita cuenta, importe y confirmación; las notas no se convierten en dinero.", 3)
        InfoCard("Diagnóstico", "Versión ${io.github.kannoncoding.wealthward.BuildConfig.VERSION_NAME}\nAndroid ${android.os.Build.VERSION.RELEASE}\n${io.github.kannoncoding.wealthward.BuildConfig.APPLICATION_ID}", 4)
        Text("Auditoría reciente", style = MaterialTheme.typography.titleMedium)

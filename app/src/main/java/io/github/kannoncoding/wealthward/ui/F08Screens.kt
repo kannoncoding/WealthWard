@@ -1,7 +1,5 @@
 package io.github.kannoncoding.wealthward.ui
 
-import android.content.Context
-import android.content.SharedPreferences
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -28,13 +26,13 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import io.github.kannoncoding.wealthward.data.F08Repository
+import io.github.kannoncoding.wealthward.data.ProjectionLimits
 import io.github.kannoncoding.wealthward.domain.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -51,22 +49,7 @@ internal data class ProjectionSettings(
  val limits: Map<Currency, ProjectionLimits> = emptyMap(),
 )
 
-internal data class ProjectionLimits(val buffer: Long = 0, val green: Long? = null)
-
-@Composable internal fun projectionPreferences(): SharedPreferences {
- val context = LocalContext.current
- return remember(context) { context.getSharedPreferences("projection_limits", Context.MODE_PRIVATE) }
-}
-
-internal fun SharedPreferences.saveLimits(settings: ProjectionSettings) {
- val limits = settings.limits.getValue(settings.base)
- val editor = edit().putLong("${settings.base}_buffer", limits.buffer)
- val greenKey = "${settings.base}_green"
- if (limits.green == null) editor.remove(greenKey) else editor.putLong(greenKey, limits.green)
- editor.apply()
-}
-
-@Composable internal fun rememberProjectionSettings(month: String, preferences: SharedPreferences) = rememberSaveable(
+@Composable internal fun rememberProjectionSettings(month: String) = rememberSaveable(
  month,
  stateSaver = listSaver<ProjectionSettings, String>(
   save = { settings ->
@@ -77,15 +60,10 @@ internal fun SharedPreferences.saveLimits(settings: ProjectionSettings) {
   restore = { values ->
    ProjectionSettings(LocalDate.parse(values[0]), Currency.valueOf(values[1]), values.drop(2).chunked(5).map {
     ProjectionRate(Currency.valueOf(it[0]), Currency.valueOf(it[1]), BigDecimal(it[2]), LocalDate.parse(it[3]), it[4])
-   }, preferences.savedLimits())
+   })
   },
  ),
-) { mutableStateOf(ProjectionSettings(minOf(LocalDate.now(BusinessTime.zone), YearMonth.parse(month).atEndOfMonth()),
- limits = preferences.savedLimits())) }
-
-private fun SharedPreferences.savedLimits() = Currency.entries.associateWith {
- ProjectionLimits(getLong("${it}_buffer", 0L), getLong("${it}_green", 0L).takeIf { value -> value > 0L })
-}
+) { mutableStateOf(ProjectionSettings(minOf(LocalDate.now(BusinessTime.zone), YearMonth.parse(month).atEndOfMonth()))) }
 
 internal data class ProjectionLoading(val result: ProjectionResult? = null, val failed: Boolean = false)
 

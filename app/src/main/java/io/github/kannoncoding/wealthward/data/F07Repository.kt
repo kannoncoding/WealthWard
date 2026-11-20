@@ -17,6 +17,8 @@ class F07Repository(private val db: WealthDatabase) {
 
     private suspend fun load() = JSONObject(dao.workspaceState()?.payload ?: F05Repository.EMPTY_STATE)
 
+    internal suspend fun debts(): List<DebtStatus> = load().commitments().debtStatuses()
+
     suspend fun snapshot(month: String = YearMonth.now(BusinessTime.zone).toString()): F07Snapshot = db.withTransaction {
         val state = load()
         val data = state.commitments()
@@ -73,7 +75,7 @@ class F07Repository(private val db: WealthDatabase) {
             CreditStatementStatus(statement, financial.accounts.first { it.id == statement.accountId }.openingMinor,
                 (statement.statementMinor - cashPaid).coerceAtLeast(0), holdIds)
         }
-        F07Snapshot(data.f07Rows("debts").map { it.debt().let { debt -> debtStatus(debt, data.debtEntries(debt.id)) } },
+        F07Snapshot(data.debtStatuses(),
             savings, projects, statements, data.f07Rows("evidence").map { it.creditEvidence() }, schedule)
     }
 
@@ -195,6 +197,11 @@ class F07Repository(private val db: WealthDatabase) {
     }
 
     private fun row(value: Any, request: String) = (canonicalPlanning(value) as JSONObject).put("requestId", request)
+}
+
+private fun JSONObject.debtStatuses(): List<DebtStatus> = f07Rows("debts").map { row ->
+    val debt = row.debt()
+    debtStatus(debt, debtEntries(debt.id))
 }
 
 private fun netProjectPayment(id: String, operations: Map<String, OperationDetail>): Long {

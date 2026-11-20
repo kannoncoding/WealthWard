@@ -1,6 +1,5 @@
 package io.github.kannoncoding.wealthward.ui
 
-import android.content.Context
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -14,7 +13,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextClearance
-import androidx.test.platform.app.InstrumentationRegistry
+import io.github.kannoncoding.wealthward.data.ProjectionLimits
 import io.github.kannoncoding.wealthward.domain.*
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -73,11 +72,9 @@ class F08UiTest {
   ui.onNodeWithText("Resultado simulado").assertDoesNotExist()
  }
 
- @Test fun forecastSettingsValidateAndPersistLimitsForTheSelectedCurrency() {
-  val context = InstrumentationRegistry.getInstrumentation().targetContext
-  val preferences = context.getSharedPreferences("f08_ui_settings_test", Context.MODE_PRIVATE)
-  preferences.edit().clear().commit()
-  show { preferences.saveLimits(it) }
+ @Test fun forecastSettingsValidateLimitsForTheSelectedCurrency() {
+  var applied: Map<Currency, ProjectionLimits>? = null
+  show { applied = it.limits }
   click("Ajustar pronóstico")
   val cushion = ui.onNodeWithText("Colchón adicional (C) · CRC")
   val margin = ui.onNodeWithText("Margen para verde (G) · CRC")
@@ -90,9 +87,7 @@ class F08UiTest {
   margin.performTextInput("450")
   click("Aplicar al pronóstico")
   ui.runOnIdle {
-   assertEquals(7_000L, preferences.getLong("CRC_buffer", -1))
-   assertEquals(45_000L, preferences.getLong("CRC_green", -1))
-   assertEquals(-1L, preferences.getLong("USD_buffer", -1))
+   assertEquals(mapOf(Currency.CRC to ProjectionLimits(7_000, 45_000)), applied)
   }
  }
 

@@ -10,6 +10,10 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = set("""
+app/src/main/java/io/github/kannoncoding/wealthward/data/F10Repository.kt
+app/src/main/java/io/github/kannoncoding/wealthward/data/F10Summary.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/F10Screens.kt
+app/src/androidTest/java/io/github/kannoncoding/wealthward/data/F10PersistenceTest.kt
 app/src/androidTest/java/io/github/kannoncoding/wealthward/ui/F07UiTest.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/F07Screens.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/F07Forms.kt
