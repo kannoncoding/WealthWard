@@ -163,6 +163,7 @@ private enum class ProjectionSection(val title: String) {
  commitments: F07Snapshot,
  ledger: F05Snapshot,
  open: (String, String) -> Unit,
+ draft: Drafts? = null,
 ) {
  var section by rememberSaveable { mutableStateOf(ProjectionSection.SUMMARY.name) }
  var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -171,7 +172,7 @@ private enum class ProjectionSection(val title: String) {
  Text(if (result == null) localized("Corte {0} · Base {1}", settings.cutoff, settings.base) else
   localized("Periodo {0} · Corte {1} · Base {2}", result.input.month, settings.cutoff, settings.base))
  Action(if (showSettings) localized("Ocultar ajustes del pronóstico") else localized("Ajustar pronóstico")) { showSettings = !showSettings }
- if (showSettings) ProjectionSettingsForm(month, settings) {
+ if (showSettings) ProjectionSettingsForm(month, settings, draft) {
   updateSettings(it)
   showSettings = false
  }
@@ -202,34 +203,36 @@ private enum class ProjectionSection(val title: String) {
  }
 }
 
-@Composable private fun ProjectionSettingsForm(month: String, settings: ProjectionSettings, apply: (ProjectionSettings) -> Unit) {
- var date by rememberSaveable(settings.cutoff) { mutableStateOf(settings.cutoff.toString()) }
- var base by rememberSaveable(settings.base) { mutableStateOf(settings.base.name) }
+@Composable private fun ProjectionSettingsForm(month: String, settings: ProjectionSettings, draft: Drafts?, apply: (ProjectionSettings) -> Unit) {
+ var date by rememberSaveable(settings.cutoff) { mutableStateOf(draft?.get("cutoff", settings.cutoff.toString()) ?: settings.cutoff.toString()) }
+ var base by rememberSaveable(settings.base) { mutableStateOf(draft?.get("base", settings.base.name) ?: settings.base.name) }
  val currency = Currency.valueOf(base)
  val other = Currency.entries.first { it != currency }
  val active = settings.rates.lastOrNull { it.from == other && it.to == currency }
  val limits = settings.limits[currency] ?: ProjectionLimits()
- var value by rememberSaveable(base, active?.rate) { mutableStateOf(active?.rate?.toPlainString().orEmpty()) }
- var rateDate by rememberSaveable(base, active?.date) { mutableStateOf(active?.date?.toString() ?: date) }
- var source by rememberSaveable(base, active?.source) { mutableStateOf(active?.source.orEmpty()) }
- var buffer by rememberSaveable(base, limits.buffer) { mutableStateOf(decimal(limits.buffer)) }
- var green by rememberSaveable(base, limits.green) { mutableStateOf(limits.green?.let(::decimal).orEmpty()) }
+ fun stored(field: String, default: String) = draft?.get("$base:$field", default) ?: default
+ fun store(field: String, value: String) { draft?.set("$base:$field", value) }
+ var value by rememberSaveable(base, active?.rate) { mutableStateOf(stored("rate", active?.rate?.toPlainString().orEmpty())) }
+ var rateDate by rememberSaveable(base, active?.date) { mutableStateOf(stored("rateDate", active?.date?.toString() ?: date)) }
+ var source by rememberSaveable(base, active?.source) { mutableStateOf(stored("source", active?.source.orEmpty())) }
+ var buffer by rememberSaveable(base, limits.buffer) { mutableStateOf(stored("buffer", decimal(limits.buffer))) }
+ var green by rememberSaveable(base, limits.green) { mutableStateOf(stored("green", limits.green?.let(::decimal).orEmpty())) }
  var error by rememberSaveable { mutableStateOf("") }
- ProjectionField(localized("Fecha de corte · AAAA-MM-DD"), date) { date = it }
+ CalendarDateField(localized("Fecha de corte"), date) { date = it; draft?.set("cutoff", it) }
  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
   Currency.entries.forEach {
-   FilterChip(selected = it == currency, onClick = { base = it.name }, label = { Text(it.name) },
+   FilterChip(selected = it == currency, onClick = { base = it.name; draft?.set("base", it.name) }, label = { Text(it.name) },
     modifier = Modifier.heightIn(min = 48.dp))
   }
  }
- ProjectionField(localized("Tasa opcional · {0} por 1 {1}", currency, other), value, numeric = true) { value = it }
+ ProjectionField(localized("Tasa opcional · {0} por 1 {1}", currency, other), value, numeric = true) { value = it; store("rate", it) }
  if (value.isNotBlank()) {
-  ProjectionField(localized("Fecha de la tasa · AAAA-MM-DD"), rateDate) { rateDate = it }
-  ProjectionField(localized("Fuente de la tasa"), source) { source = it }
+  CalendarDateField(localized("Fecha de la tasa"), rateDate) { rateDate = it; store("rateDate", it) }
+  ProjectionField(localized("Fuente de la tasa"), source) { source = it; store("source", it) }
  }
- ProjectionField(localized("Colchón adicional (C) · {0}", currency), buffer, numeric = true) { buffer = it }
+ ProjectionField(localized("Colchón adicional (C) · {0}", currency), buffer, numeric = true) { buffer = it; store("buffer", it) }
  Text(localized("Incluye solo el colchón adicional a los fondos ya protegidos."))
- ProjectionField(localized("Margen para verde (G) · {0}", currency), green, numeric = true) { green = it }
+ ProjectionField(localized("Margen para verde (G) · {0}", currency), green, numeric = true) { green = it; store("green", it) }
  Text(localized("Vacío aplica el margen predeterminado de {0}.", ProjectionInput.DEFAULT_GREEN_MARGIN.display()))
  Action(localized("Aplicar al pronóstico")) {
   val cutoff = runCatching { LocalDate.parse(date) }.getOrNull()

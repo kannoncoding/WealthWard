@@ -123,3 +123,9 @@
 !/app/src/main/res/raw/inter_license.txt
 !/app/src/test/java/io/github/kannoncoding/wealthward/ui/AccountMonthTest.kt
 !/docs/monthly-rollover.md
+!/app/src/main/java/io/github/kannoncoding/wealthward/data/CategoryCatalog.kt
+!/app/src/main/java/io/github/kannoncoding/wealthward/domain/Categories.kt
+!/app/src/main/java/io/github/kannoncoding/wealthward/ui/CategoryField.kt
+!/app/src/main/java/io/github/kannoncoding/wealthward/ui/CalendarDateField.kt
+!/app/src/androidTest/java/io/github/kannoncoding/wealthward/data/CategoryCatalogTest.kt
+!/app/src/androidTest/java/io/github/kannoncoding/wealthward/ui/AccountMonthUiTest.kt

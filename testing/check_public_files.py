@@ -10,6 +10,12 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = set("""
+app/src/androidTest/java/io/github/kannoncoding/wealthward/ui/AccountMonthUiTest.kt
+app/src/main/java/io/github/kannoncoding/wealthward/data/CategoryCatalog.kt
+app/src/main/java/io/github/kannoncoding/wealthward/domain/Categories.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/CategoryField.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/CalendarDateField.kt
+app/src/androidTest/java/io/github/kannoncoding/wealthward/data/CategoryCatalogTest.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/Appearance.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/AccountMonth.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/CompactActions.kt

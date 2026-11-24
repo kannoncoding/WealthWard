@@ -11,7 +11,10 @@ import io.github.kannoncoding.wealthward.domain.F06Snapshot
 import io.github.kannoncoding.wealthward.domain.F07Snapshot
 import io.github.kannoncoding.wealthward.domain.PlanNature
 import io.github.kannoncoding.wealthward.domain.PlannedOccurrence
+import io.github.kannoncoding.wealthward.domain.RecurringTemplate
 import java.math.BigDecimal
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 
 internal fun monthlyAccountBills(plan: F06Snapshot, month: String): Map<String?, List<PlannedOccurrence>> =
     plan.occurrences.filter {
@@ -32,7 +35,7 @@ internal fun pendingOutsideReserves(account: AccountDetail, bills: List<PlannedO
 }
 
 @Composable
-internal fun AccountMonthlyBills(bills: List<PlannedOccurrence>, open: (String, String) -> Unit) {
+internal fun AccountMonthlyBills(bills: List<PlannedOccurrence>, templates: List<RecurringTemplate>, open: (String, String) -> Unit) {
     Text(localized("Gastos y apps del mes"), style = MaterialTheme.typography.titleLarge)
     if (bills.isEmpty()) Text(localized("No hay gastos ni apps ligados a esta cuenta este mes."))
     bills.forEachIndexed { index, bill ->
@@ -40,9 +43,19 @@ internal fun AccountMonthlyBills(bills: List<PlannedOccurrence>, open: (String, 
         val pending = bill.paymentPendingMinor > 0
         Panel(if (pending) Modifier.clickable(role = Role.Button) { open("f06pay", bill.id) } else Modifier) {
             Text(bill.name, style = MaterialTheme.typography.titleMedium)
-            Text((if (bill.nature == PlanNature.SUBSCRIPTION) localized("App o suscripción") else localized("Gasto fijo")) + " · " + bill.dueDate)
-            Text(localized("Total ") + money(bill.paymentTotalMinor, bill.currency))
-            Text(if (pending) localized("Pendiente ") + money(bill.paymentPendingMinor, bill.currency) else localized("Pagado"))
+            val date = LocalDate.parse(bill.dueDate)
+                .format(DateTimeFormatter.ofPattern("d MMM uuuu", AppLanguage.current.locale))
+            Text((if (bill.nature == PlanNature.SUBSCRIPTION) localized("App o suscripción") else localized("Gasto fijo")) + " · " + date)
+            if (bill.shared) {
+                val template = templates.firstOrNull { it.id == bill.templateId && it.version == bill.templateVersion }
+                val percent = template?.ownPercent?.toBigDecimalOrNull()?.stripTrailingZeros()?.toPlainString()
+                val ownAmount = money(bill.confirmedMinor ?: bill.expectedMinor, bill.currency)
+                Text(localized("Mi aporte: {0}", ownAmount) + if (percent == null) "" else " · $percent%")
+                Text(localized("Total compartido: {0}", money(bill.paymentTotalMinor, bill.currency)))
+            } else Text(localized("Total ") + money(bill.paymentTotalMinor, bill.currency))
+            Text(if (pending) localized("Pendiente ") + money(bill.paymentPendingMinor, bill.currency) else localized("Pagado"),
+                color = LocalPalette.current.balanceColor(if (pending) -1 else 1),
+                style = MaterialTheme.typography.labelLarge)
         }
     }
 }

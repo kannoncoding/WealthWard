@@ -54,13 +54,13 @@ internal fun f07Title(action: String) = when (action) {
   val currency = f.currency()
   val kind = f.choice("kind", localized("Tipo financiero"), DebtKind.entries.map { it.name to debtKindName(it) })
   f.text("opening", localized("Saldo total pendiente de la deuda"), numeric = true)
-  f.text("openingDate", localized("Fecha de apertura · AAAA-MM-DD"), today())
-  f.text("due", localized("Primera cuota · AAAA-MM-DD"), today())
+  f.calendar("openingDate", localized("Fecha de apertura"), today())
+  f.calendar("due", localized("Primera cuota"), today())
   val interval = f.choice("frequency", localized("Frecuencia de cobro"), listOf("1" to localized("Mensual"), "2" to localized("Cada dos meses"), "3" to localized("Trimestral"), "6" to localized("Semestral"), "12" to localized("Anual"))).toInt()
   f.text("installment", localized("Monto por cuota"), numeric = true)
   val endMode = f.choice("endMode", localized("Cómo termina la deuda"), listOf("COUNT" to localized("Cantidad de cuotas"), "DATE" to localized("Fecha de fin")))
   if (endMode == "COUNT") f.text("months", localized("Cuotas restantes"), numeric = true)
-  else f.text("endDate", localized("Fecha de fin · AAAA-MM-DD"))
+  else f.calendar("endDate", localized("Fecha de fin"))
   val amortization = if (interval != 1) DebtAmortization.MANUAL else DebtAmortization.valueOf(f.choice("amortization", localized("Modo de amortización"),
    listOf(DebtAmortization.MANUAL.name to localized("Seguimiento manual"), DebtAmortization.FIXED_MONTHLY.name to localized("Tasa fija mensual"))))
   f.text("rate", if (amortization == DebtAmortization.MANUAL) localized("Interés anual aproximado % (opcional)") else localized("Tasa anual confirmada en %"), numeric = true)
@@ -95,7 +95,7 @@ internal fun f07Title(action: String) = when (action) {
  if (action == "f07verify") {
   Text(localized("El principal registrado se actualizará al saldo que confirmes. Se conservará la referencia de la verificación."))
   f.text("observed", localized("Principal informado por el acreedor"), numeric = true)
-  f.text("date", localized("Fecha del saldo · AAAA-MM-DD"), today())
+  f.calendar("date", localized("Fecha del saldo"), today())
   f.text("reference", localized("Referencia del acreedor"))
   val confirmed = f.check("confirmed", localized("Confirmo el saldo informado por el acreedor"))
   return {
@@ -109,7 +109,7 @@ internal fun f07Title(action: String) = when (action) {
   Text(localized("Cuota de {0}{1}", installmentMonth, occurrence?.let { localized(" · Pendiente {0}", money(it.pendingMinor, debt.currency)) }.orEmpty()))
  } else Text(localized("Abono extraordinario · {0}", extraPolicyName(debt.extraPaymentPolicy)))
  val account = f.account("account", localized("Cuenta de origen"), cash.filter { it.currency == debt.currency }, debt.suggestedAccountId.orEmpty())
- f.text("date", localized("Fecha real del pago · AAAA-MM-DD"), today())
+ f.calendar("date", localized("Fecha real del pago"), today())
  f.text("principal", localized("Principal pagado"), "0", numeric = true)
  f.text("interest", localized("Intereses pagados"), "0", numeric = true)
  f.text("charges", localized("Cargos pagados"), "0", numeric = true)
@@ -139,7 +139,7 @@ internal fun f07Title(action: String) = when (action) {
   f.text("group", localized("Grupo visual"), "Ahorro")
   val currency = f.currency()
   f.text("target", localized("Monto objetivo"), numeric = true)
-  f.text("targetDate", localized("Fecha objetivo · AAAA-MM-DD"), today())
+  f.calendar("targetDate", localized("Fecha objetivo"), today())
   f.text("priority", localized("Prioridad (1 es la mayor)"), "1", numeric = true)
   f.text("monthly", localized("Aporte mensual previsto"), "0", numeric = true)
   return {
@@ -176,7 +176,7 @@ internal fun f07Title(action: String) = when (action) {
   plan.savings.filter { it.goal.id != goal.id && it.goal.currency == goal.currency }.map { it.goal.id to it.goal.name }) else null
  if (type == SavingAction.EXTERNAL) f.text("recipient", localized("Beneficiario externo"))
  f.text("amount", localized("Importe"), numeric = true)
- f.text("date", localized("Fecha del aporte o movimiento · AAAA-MM-DD"), today())
+ f.calendar("date", localized("Fecha del aporte o movimiento"), today())
  val confirmed = when (type) {
   SavingAction.TRANSFER -> f.check("confirmed", localized("Confirmo la transferencia real entre mis cuentas"))
   SavingAction.EXTERNAL -> f.check("confirmed", localized("Confirmo el aporte externo real"))
@@ -248,7 +248,7 @@ private fun Fields.optionalAmount(key: String, label: String): Long? =
  }
  Text(localized("Registra el pago una sola vez. Si ya aparece en Movimientos, usa Vincular pago existente."))
  val account = f.account("account", localized("Cuenta de origen"), cash.filter { it.currency == project.currency })
- f.text("date", localized("Fecha real del pago · AAAA-MM-DD"), today())
+ f.calendar("date", localized("Fecha real del pago"), today())
  f.text("amount", localized("Importe pagado"), numeric = true)
  val confirmed = f.check("confirmed", localized("Confirmo que este pago realmente ocurrió"))
  return {
@@ -289,8 +289,8 @@ private fun Fields.optionalAmount(key: String, label: String): Long? =
    F07Command.LinkCreditEvidence(id, CreditEvidence(id, account.id, operation, kind, f.required("reference", localized("referencia"))))
   }
  }
- f.text("cutoff", localized("Fecha de corte · AAAA-MM-DD"), today())
- f.text("due", localized("Fecha de vencimiento · AAAA-MM-DD"), today())
+ f.calendar("cutoff", localized("Fecha de corte"), today())
+ f.calendar("due", localized("Fecha de vencimiento"), today())
  f.text("amount", localized("Saldo informado al corte"), numeric = true)
  Text(localized("Marca los movimientos incluidos por el emisor en este corte."))
  val cutoff = f.value("cutoff", today())

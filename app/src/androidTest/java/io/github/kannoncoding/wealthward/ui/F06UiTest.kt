@@ -1,5 +1,6 @@
 package io.github.kannoncoding.wealthward.ui
 
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -8,6 +9,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
+import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.room.Room
 import androidx.test.platform.app.InstrumentationRegistry
@@ -17,6 +19,32 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.*
 import org.junit.Assert.*
+import java.time.LocalDate
+import java.time.chrono.IsoChronology
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeFormatterBuilder
+import java.time.format.FormatStyle
+
+internal fun ComposeTestRule.selectCalendarDate(label: String, isoDate: String) {
+ val locale = AppLanguage.current.locale
+ val context = InstrumentationRegistry.getInstrumentation().targetContext
+ val localizedContext = context.createConfigurationContext(Configuration(context.resources.configuration).apply { setLocale(locale) })
+ val switchToText = localizedContext.getString(androidx.compose.material3.R.string.m3c_date_picker_switch_to_input_mode)
+ val shortPattern = DateTimeFormatterBuilder.getLocalizedDateTimePattern(FormatStyle.SHORT, null, IsoChronology.INSTANCE, locale)
+ val digitsPattern = Regex("d+|M+|y+").findAll(shortPattern).joinToString("") { field ->
+  when (field.value.first()) {
+   'd' -> "dd"
+   'M' -> "MM"
+   else -> "yyyy"
+  }
+ }
+ onNodeWithContentDescription(label).performScrollTo().performClick()
+ onNodeWithContentDescription(switchToText).performClick()
+ onNode(hasSetTextAction() and hasAnyAncestor(isDialog())).performTextReplacement(
+  LocalDate.parse(isoDate).format(DateTimeFormatter.ofPattern(digitsPattern, locale)),
+ )
+ onNodeWithText(localized("Aplicar fecha")).performClick()
+}
 
 /** Actual production forms and real Room transactions; no mock planning or payment layer. */
 class F06UiTest {
@@ -76,7 +104,7 @@ class F06UiTest {
   val occurrence=snapshot().occurrences.single()
   assertEquals("2027-02-26",occurrence.dueDate)
   open("f06pay",occurrence.id)
-  text("Importe real recibido o pagado","1500"); text("Fecha real del movimiento","2027-02-26"); click("Guardar")
+  text("Importe real recibido o pagado","1500"); ui.selectCalendarDate("Fecha real del movimiento","2027-02-26"); click("Guardar")
   ui.onNodeWithText("Confirma el movimiento real",substring=true).assertExists()
   assertTrue(runBlocking { ledger.snapshot() }.operations.isEmpty())
   click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
@@ -87,9 +115,9 @@ class F06UiTest {
  @Test fun t06ConfirmActualThenPayPartAndRestWithoutDuplicateExpense() {
   seedTemplate(); refresh(); val id=snapshot().occurrences.single().id
   open("f06confirm",id); text("Importe real total","1200"); click("Guardar"); saved()
-  open("f06pay",id); text("Importe real recibido o pagado","400"); text("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
+  open("f06pay",id); text("Importe real recibido o pagado","400"); ui.selectCalendarDate("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
   assertEquals(80000L,snapshot().occurrences.single().pendingMinor)
-  open("f06pay",id); text("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
+  open("f06pay",id); ui.selectCalendarDate("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
   assertEquals(0L,snapshot().occurrences.single().pendingMinor)
   assertEquals(2,runBlocking { ledger.snapshot() }.operations.size)
  }
@@ -116,7 +144,7 @@ class F06UiTest {
   text("Nombre de la obligación","Cuota de prueba"); text("Importe propio estimado","1000"); text("Día nominal (1–31)","31"); text("Motivo de esta revisión","Alta de prueba"); click("Guardar"); saved()
   runBlocking { repeat(3) { repo.execute(F06Command.OpenPeriod("open-$it","2027-02")) } }; refresh()
   val item=snapshot().occurrences.single(); assertEquals("2027-02-28",item.dueDate)
-  open("f06pay",item.id); text("Importe real recibido o pagado","100"); text("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
+  open("f06pay",item.id); text("Importe real recibido o pagado","100"); ui.selectCalendarDate("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
   open("f06template",item.templateId); text("Vigente desde · AAAA-MM","2027-03"); text("Importe propio estimado","2000"); text("Motivo de esta revisión","Revisión futura"); click("Guardar"); saved()
   runBlocking { repo.execute(F06Command.OpenPeriod("march","2027-03")) }
   val rows=snapshot().occurrences
@@ -135,7 +163,7 @@ class F06UiTest {
   open("release"); text("Importe a liberar","1000"); click("Guardar"); saved()
   assertEquals(100000L,snapshot().occurrences.single().pendingMinor)
   assertEquals(0L,runBlocking { ledger.snapshot() }.accounts.single().reservedMinor)
-  open("f06pay",id); text("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
+  open("f06pay",id); ui.selectCalendarDate("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
   assertEquals(0L,snapshot().occurrences.single().pendingMinor)
   assertEquals(1,runBlocking { ledger.snapshot() }.operations.size)
   assertEquals(49900000L,runBlocking { ledger.snapshot() }.accounts.single().balanceMinor)

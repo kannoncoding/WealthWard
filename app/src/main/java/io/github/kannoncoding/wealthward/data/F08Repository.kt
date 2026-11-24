@@ -252,26 +252,37 @@ class F08Repository(private val db: WealthDatabase) {
                 prior = amount
             }
         }
-        val variableRows = plan?.rows.orEmpty().filter { it.nature in variableKinds }.groupBy { it.currency to it.name }
+        val activeRows = plan?.rows.orEmpty()
+        val variableRows = activeRows.filter { it.nature in variableKinds }.groupBy { it.currency to it.name }
         val effectivePlans = allPlans.filter { LocalDate.parse(it.effectiveDate) <= cutoff }.groupBy { it.month }
             .mapValues { (_, versions) -> versions.maxBy { it.version } }
         variableRows.forEach { (key, rows) ->
             val (currency, category) = key
+            val matchesCurrent = budgetCategoryMatcher(rows, activeRows, currency)
+            fun consumption(inMonth: String, matches: (String) -> Boolean): Long =
+                consumptionByMonth.entries.filter { (spent, _) ->
+                    spent.first == inMonth && spent.second == currency && matches(spent.third)
+                }.sumMinor { it.value }
             var cursor = period.minusMonths(1)
             val history = mutableListOf<Pair<Long, Long>>()
             while (rows.any { it.accumulate }) {
-                val capped = effectivePlans[cursor.toString()]?.rows.orEmpty().filter {
-                    it.name == category && it.currency == currency && it.nature in variableKinds && it.accumulate
+                val priorMonth = cursor.toString()
+                val priorRows = effectivePlans[priorMonth]?.rows.orEmpty()
+                val capped = priorRows.filter {
+                    matchesCurrent(it.name) && it.currency == currency && it.nature in variableKinds && it.accumulate
                 }
                 if (capped.isEmpty()) break
-                history += capped.sumMinor { it.minor } to (consumptionByMonth[Triple(cursor.toString(), currency, category)] ?: 0L)
+                history += capped.sumMinor { it.minor } to consumption(priorMonth, budgetCategoryMatcher(capped, priorRows, currency))
                 cursor = cursor.minusMonths(1)
             }
             val carried = history.asReversed().fold(0L) { carry, (budget, used) -> (Math.addExact(carry, budget) - used).coerceAtLeast(0) }
             val limit = Math.addExact(rows.sumMinor { it.minor }, carried)
-            val consumed = consumptionByMonth[Triple(month, currency, category)] ?: 0L
+            val consumed = consumption(month, matchesCurrent)
+            val linkedOperations = consumptionLinks.entries.filter { (spent, _) ->
+                spent.first == currency && matchesCurrent(spent.second)
+            }.flatMap { it.value }.distinct()
             lines += ProjectionLine("variable:${rows.first().id}", category, ProjectionComponent.VARIABLE, Money((limit - consumed).coerceAtLeast(0), currency),
-                links = rows.map { ProjectionLink(ProjectionSource.PLAN, it.id) } + consumptionLinks[key].orEmpty().map { ProjectionLink(ProjectionSource.MOVEMENT, it) })
+                links = rows.map { ProjectionLink(ProjectionSource.PLAN, it.id) } + linkedOperations.map { ProjectionLink(ProjectionSource.MOVEMENT, it) })
         }
 
         val goals = cutCommitments.f07Rows("goals").map { it.savingGoal() }

@@ -173,7 +173,7 @@ internal fun configurationTitle(screen: String) =
    command={ F06Command.SaveSalary(draft.request(),SalaryVersion(draft.get("entity").ifBlank { newId().also { draft.set("entity",it) } },YearMonth.parse(f.required("effective",localized("mes"),month)).toString(),f.amount(label=localized("salario neto")),Currency.valueOf(currency),account.ifBlank { null },f.required("reason",localized("motivo")),if(schedule=="DAY") f.required("day",localized("día"),"1").toInt() else null)) }
   }
   "f06extra" -> {
-   f.text("name",localized("Nombre del ingreso")); f.text("date",localized("Fecha esperada"),today()); f.text("amount",localized("Importe esperado"),numeric=true)
+   f.text("name",localized("Nombre del ingreso")); f.calendar("date",localized("Fecha esperada"),today()); f.text("amount",localized("Importe esperado"),numeric=true)
    val currency=f.choice("currency",localized("Moneda"),Currency.entries.map { it.name to it.name })
    val account=f.account("account",localized("Cuenta de recepción sugerida"),cash.filter { it.currency.name==currency })
    Text(localized("Este registro es una expectativa. Confirma la recepción en el calendario cuando recibas el dinero."))
@@ -183,6 +183,8 @@ internal fun configurationTitle(screen: String) =
    val old=snapshot.templates.filter { it.id==subject }.maxByOrNull { it.version }
    f.text("name",localized("Nombre de la obligación"),old?.name.orEmpty()); f.text("group",localized("Grupo visual personalizado"),old?.group ?: "Hogar")
    val nature=f.choice("nature",localized("Tipo financiero"),listOf(PlanNature.FIXED,PlanNature.SUBSCRIPTION).map { it.name to natureName(it) },old?.nature?.name ?: subject.takeIf { it in listOf("FIXED","SUBSCRIPTION") }.orEmpty())
+   val categoryDefault = old?.category.orEmpty()
+   f.category("category", localized("Categoría (opcional)"), ledger.categories, categoryDefault)
    f.text("effective",localized("Vigente desde · AAAA-MM"),month)
    f.text("amount",localized("Importe propio estimado"),old?.minor?.let(::decimal).orEmpty(),true)
    val currency=f.choice("currency",localized("Moneda"),Currency.entries.map { it.name to it.name },old?.currency?.name ?: "CRC")
@@ -208,7 +210,7 @@ internal fun configurationTitle(screen: String) =
     val percent=if(household && share=="PERCENT") f.required("percent",localized("porcentaje")) else null
     val fixed=if(household && share=="FIXED") f.amount("own",localized("parte propia"),allowZero=true) else null
     val own=if(total!=null) PlanningMath.ownShare(total,percent,fixed) else f.amount()
-    F06Command.SaveTemplate(draft.request(),RecurringTemplate(old?.id ?: draft.get("entity").ifBlank { newId().also { draft.set("entity",it) } },(old?.version ?: 0)+1,f.required("name",localized("nombre")),f.required("group",localized("grupo"),"Hogar"),PlanNature.valueOf(nature),own,Currency.valueOf(currency),YearMonth.parse(f.required("effective",localized("vigencia"),month)).toString(),Recurrence.valueOf(recurrence),f.required("day",localized("día"),"1").toInt(),f.value("second","15").toInt(),f.value("interval","1").toInt(),account.ifBlank { null },purpose.ifBlank { null },paused,cancelled,total,percent,fixed,if(recurrence=="ANNUAL") f.amount("contribution",localized("aporte mensual"),allowZero=true) else 0,f.required("reason",localized("motivo"))))
+    F06Command.SaveTemplate(draft.request(),RecurringTemplate(old?.id ?: draft.get("entity").ifBlank { newId().also { draft.set("entity",it) } },(old?.version ?: 0)+1,f.required("name",localized("nombre")),f.required("group",localized("grupo"),"Hogar"),PlanNature.valueOf(nature),own,Currency.valueOf(currency),YearMonth.parse(f.required("effective",localized("vigencia"),month)).toString(),Recurrence.valueOf(recurrence),f.required("day",localized("día"),"1").toInt(),f.value("second","15").toInt(),f.value("interval","1").toInt(),account.ifBlank { null },purpose.ifBlank { null },paused,cancelled,total,percent,fixed,if(recurrence=="ANNUAL") f.amount("contribution",localized("aporte mensual"),allowZero=true) else 0,f.required("reason",localized("motivo")),category=f.value("category",categoryDefault).trim().ifBlank { null }))
    }
   }
   "f06pay", "f06confirm", "f06fund", "f06link" -> {
@@ -230,7 +232,7 @@ internal fun configurationTitle(screen: String) =
      if (!alreadyDeducted && eligible.any { it.id == account && it.kind == "LIABILITY" }) Text(localized("Se registra el cargo en la tarjeta. Pagá la tarjeta por separado desde tu cuenta de débito."))
      if (alreadyDeducted) Text(localized("Importe a descontar: 0. Se marcará como pagado sin cambiar el saldo."))
      else f.text("amount",if(action=="f06fund") localized("Importe a reservar") else localized("Importe real recibido o pagado"),decimal(if (action == "f06pay") occurrence.paymentPendingMinor else occurrence.pendingMinor),true)
-     if(action!="f06fund") f.text("date",localized("Fecha real del movimiento"),today())
+     if(action!="f06fund") f.calendar("date",localized("Fecha real del movimiento"),today())
      val confirmed=f.check("confirmed",if(action=="f06fund") localized("Confirmo asignar dinero existente a la reserva") else localized("Confirmo que este movimiento realmente ocurrió"))
      if (!alreadyDeducted) Text(if(action=="f06fund") localized("Financiar reserva protege dinero existente y no paga la obligación. Puedes liberarlo desde Metas.") else localized("Puedes registrar una parte. El pendiente se reduce con este único movimiento vinculado."))
      command={ require(confirmed) { localized("Confirma el movimiento real antes de guardar.") }; if(action=="f06fund") F06Command.FundAnnual(draft.request(),subject,account,f.amount()) else if (alreadyDeducted) F06Command.ConfirmPreviouslyDeducted(draft.request(),subject,account,f.date()) else F06Command.Pay(draft.request(),subject,account,f.amount(),f.date()) }
@@ -277,13 +279,13 @@ internal fun configurationTitle(screen: String) =
 @Composable private fun BudgetEditor(f:Fields,month:String,snapshot:F06Snapshot,ledger:F05Snapshot,draft:Drafts,onSubmit:(F06Command)->Unit,onError:(String)->Unit) {
  val old=snapshot.plans.filter { it.month==month }.maxByOrNull { it.version }
  Text(localized("Versión inicial conservada; guardar crea una revisión para {0}. Las necesidades y el gasto libre tienen sobres separados por categoría y moneda.", month))
- f.text("effective",localized("Fecha efectiva de la versión"),old?.effectiveDate ?: "$month-01")
+ f.calendar("effective",localized("Fecha efectiva de la versión"),old?.effectiveDate ?: "$month-01")
  f.text("reason",localized("Motivo de la versión"))
  val count=f.value("count",(old?.rows?.size ?: 1).coerceAtLeast(1).toString()).toIntOrNull() ?: 1
  val rows=mutableListOf<()->PlanRow>()
  repeat(count) { index ->
   val row=old?.rows?.getOrNull(index); Text(localized("Línea {0}", index+1),style=MaterialTheme.typography.titleMedium)
-  f.text("name$index",localized("Categoría {0}", index+1),row?.name ?: "")
+  f.category("name$index",localized("Categoría {0}", index+1),ledger.categories,row?.name.orEmpty())
   f.text("group$index",localized("Grupo visual {0}", index+1),row?.group ?: "Variables")
   val nature=f.choice("nature$index",localized("Tipo financiero {0}", index+1),listOf(PlanNature.VARIABLE_NEED,PlanNature.FREE,PlanNature.INCOME,PlanNature.FIXED,PlanNature.SUBSCRIPTION,PlanNature.SAVING,PlanNature.DEBT).map { it.name to natureName(it) },row?.nature?.name ?: "VARIABLE_NEED")
   f.text("amount$index",localized("Presupuesto {0}", index+1),row?.minor?.let(::decimal).orEmpty(),true)

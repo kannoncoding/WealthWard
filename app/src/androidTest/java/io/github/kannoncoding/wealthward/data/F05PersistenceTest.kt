@@ -17,6 +17,44 @@ class F05PersistenceTest {
  private fun database() = Room.inMemoryDatabaseBuilder(context,WealthDatabase::class.java).build()
  private suspend fun F05Repository.cash(id:String="a",amount:Long=50000000,currency:Currency=Currency.CRC,kind:String="CASH",product:String=id) = execute(F05Command.CreateAccount("create:$id",id,product,"Account $id",currency,kind,amount,"2026-01-01"))
  private suspend fun fails(block:suspend ()->Unit) { try { block(); fail("Invalid command must fail") } catch (_:DomainFailure) {} }
+ @Test fun cashSubtypeEditsAndRestoreKeepProductAndHistory(): Unit = runBlocking {
+  val db = database()
+  try {
+   val repo = FinanceRepository(db)
+   val workspace = repo.workspace
+   workspace.cash(product = "bank")
+   assertNull(workspace.snapshot().accounts.single().cashSubtype)
+   val savings = F05Command.CreateAccount("savings", "savings", "bank", "Savings USD", Currency.USD, "CASH",
+    1_000L, "2026-01-01", cashSubtype = CashAccountSubtype.SAVINGS)
+   workspace.execute(savings)
+   workspace.execute(F05Command.Record("expense", "a", "EXPENSE", 500L, day, "Merchant", "Food"))
+   val before = workspace.snapshot()
+   val beforePostings = db.ledger().postings()
+   val edit = F05Command.EditAccount("edit-subtype", "a", "Account a", Currency.CRC, "CASH", "2026-01-01", 0L,
+    expectedCurrency = Currency.CRC, expectedBalanceMinor = before.accounts.single { it.id == "a" }.balanceMinor,
+    cashSubtype = CashAccountSubtype.OTHER, customTypeName = "  Fondo familiar  ")
+   fails { workspace.execute(edit.copy(customTypeName = " ")) }
+   workspace.execute(edit)
+   val edited = workspace.snapshot()
+   val account = edited.accounts.single { it.id == "a" }
+   assertEquals(CashAccountSubtype.OTHER, account.cashSubtype)
+   assertEquals("Fondo familiar", account.customTypeName)
+   assertEquals(before.accounts.single { it.id == "a" }.copy(
+    cashSubtype = CashAccountSubtype.OTHER, customTypeName = "Fondo familiar"), account)
+   assertEquals(CashAccountSubtype.SAVINGS, edited.accounts.single { it.id == "savings" }.cashSubtype)
+   assertEquals(before.operations, edited.operations)
+   assertEquals(beforePostings, db.ledger().postings())
+   repo.restoreFixture(repo.exportFixture())
+   assertEquals(edited, workspace.snapshot())
+
+   workspace.execute(edit.copy(requestId = "edit-to-pension", cashSubtype = CashAccountSubtype.PENSION, customTypeName = null))
+   val pension = workspace.snapshot().accounts.single { it.id == "a" }
+   assertEquals(CashAccountSubtype.PENSION, pension.cashSubtype)
+   assertNull(pension.customTypeName)
+   assertEquals("bank", pension.productId)
+  } finally { db.close() }
+ }
+
  @Test fun accountEditConvertsAnUntouchedOpeningAndPreservesLaterHistory(): Unit = runBlocking {
   val db = database()
   try {

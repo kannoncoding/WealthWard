@@ -21,6 +21,9 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 
 /** Production forms with the real transactional Room boundary, using fictitious CRC only. */
 class F05UiTest {
@@ -62,6 +65,21 @@ class F05UiTest {
  private fun saved() { ui.waitUntil(10000) { status.value == "Guardado" }; ui.waitForIdle() }
  private fun snapshot() = runBlocking { repo.snapshot() }
  private fun expense() { text("Importe", "15000"); text("Comercio", "Comercio genérico"); text("Categoría", "Alimentos") }
+
+ @Test fun optionalPostingDateCanBeClearedAfterReopeningDraft() {
+  val label = localized("Fecha contabilizada (si difiere)")
+  val chosen = LocalDate.parse("2026-02-10")
+  val display = chosen.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(AppLanguage.current.locale))
+  ui.selectCalendarDate(label, chosen.toString())
+  ui.onNodeWithContentDescription(label).assertTextContains(display)
+  click("Cancelar")
+  open("expense")
+  ui.onNodeWithContentDescription(label).assertTextContains(display).performScrollTo().performClick()
+  ui.onNode(hasText(localized("Cancelar")) and hasAnyAncestor(isDialog())).performClick()
+  ui.onNodeWithContentDescription(label).assertTextContains(display).performClick()
+  ui.onNodeWithText(localized("Quitar fecha")).performClick()
+  ui.onNodeWithContentDescription(label).assertTextContains(localized("Elegir fecha"))
+ }
 
  @Test fun validationAndCancelRetainDraftWithoutPosting() {
   expense()

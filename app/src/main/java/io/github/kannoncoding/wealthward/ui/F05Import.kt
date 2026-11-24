@@ -67,7 +67,7 @@ private fun rowIdentity(cells: List<String>): String = MessageDigest.getInstance
   Text(localized("Alias repetido: {0}", alias), style = MaterialTheme.typography.titleMedium)
   val account = f.choice("$aliasKey-account", localized("Resolver alias {0}", alias), listOf("" to localized("Sin asignar")) + accounts.map { it.id to "${it.name} · ${it.currency}" })
   f.text("$aliasKey-opening", localized("Apertura común verificada · {0}", alias), numeric = true)
-  f.text("$aliasKey-date", localized("Fecha de apertura común · {0} · AAAA-MM-DD", alias))
+  f.calendar("$aliasKey-date", localized("Fecha de apertura común · {0}", alias), optional = true)
   Action(localized("Aplicar mapeo a {0} filas de {1}", matching.size, alias), !busy && account.isNotBlank()) {
    matching.forEach { cells -> val prefix = "row-${rowIdentity(cells)}"; draft.set("$prefix-account", account); draft.set("$prefix-opening", f.value("$aliasKey-opening")); draft.set("$prefix-date", f.value("$aliasKey-date")); draft.set("$prefix-confirmed", "false") }
    draft.set("previewed", "false")
@@ -84,7 +84,7 @@ private fun rowIdentity(cells: List<String>): String = MessageDigest.getInstance
   f.text("$prefix-content", localized("Contenido revisado · fila {0}", index + 1), cells[1], lines = 2)
   f.text("$prefix-notes", localized("Notas conservadas · fila {0}", index + 1), cells[2], lines = 2)
   f.text("$prefix-opening", localized("Apertura explícita · fila {0}", index + 1), numeric = true)
-  f.text("$prefix-date", localized("Fecha de apertura · fila {0} · AAAA-MM-DD", index + 1))
+  f.calendar("$prefix-date", localized("Fecha de apertura · fila {0}", index + 1), optional = true)
   val reserve = f.check("$prefix-reserve", localized("También confirmar una reserva financiada en esta cuenta"))
   val purpose = if (reserve) f.choice("$prefix-purpose", localized("Propósito de la reserva · fila {0}", index + 1), listOf("new" to localized("Crear propósito")) + snapshot.accounts.flatMap { it.reserves }.distinctBy { it.purposeId }.map { it.purposeId to it.name }) else ""
   if (reserve) { if (purpose == "new") f.text("$prefix-purposeName", localized("Nombre del propósito · fila {0}", index + 1)); f.text("$prefix-reserveAmount", localized("Importe real de reserva · fila {0}", index + 1), numeric = true) }

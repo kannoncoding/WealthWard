@@ -15,6 +15,25 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
 
+private fun accountTypeChoices(): List<Pair<String, String>> = listOf(
+ "CASH" to localized("Cuenta bancaria de débito"),
+ CashAccountSubtype.SAVINGS.name to localized("Ahorros"),
+ CashAccountSubtype.PENSION.name to localized("Pensión"),
+ CashAccountSubtype.ASSOCIATION.name to localized("Asociación"),
+ "PHYSICAL_CASH" to localized("Efectivo físico"),
+ "LIABILITY" to localized("Tarjeta de crédito · deuda"),
+ CashAccountSubtype.OTHER.name to localized("Otro"),
+)
+
+private fun AccountDetail.accountTypeChoice(): String = when {
+ cashSubtype != null -> cashSubtype.name
+ kind == "CASH" && productId.startsWith("cash") -> "PHYSICAL_CASH"
+ else -> kind
+}
+
+internal fun AccountDetail.accountTypeLabel(): String =
+ customTypeName ?: accountTypeChoices().firstOrNull { it.first == accountTypeChoice() }?.second.orEmpty()
+
 internal class Fields(val draft: Drafts, val busy: Boolean) {
  fun value(key: String, default: String = "") = draft.get(key, default)
  fun required(key: String, label: String, default: String = ""): String = value(key, default).trim().also { require(it.isNotBlank()) { localized("Completa {0}.", label) } }
@@ -24,8 +43,13 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
   require(signed || if (allowZero) minor >= 0 else minor > 0) { localized("El {0} debe ser {1}.", label, if (allowZero) localized("cero o positivo") else localized("positivo")) }
   return minor
  }
- fun date(key: String = "date", default: String = today()): String = required(key, localized("fecha"), default).also { try { LocalDate.parse(it) } catch (_: Exception) { throw IllegalArgumentException(localized("Fecha inválida. Usa AAAA-MM-DD.")) } }
- fun optionalDate(key: String, default: String = ""): String? = value(key, default).trim().ifBlank { null }?.also { try { LocalDate.parse(it) } catch (_: Exception) { throw IllegalArgumentException(localized("Fecha inválida. Usa AAAA-MM-DD.")) } }
+ fun date(key: String = "date", default: String = today()): String = required(key, localized("fecha"), default).also { try { LocalDate.parse(it) } catch (_: Exception) { throw IllegalArgumentException(localized("Elige una fecha válida.")) } }
+ fun optionalDate(key: String, default: String = ""): String? = value(key, default).trim().ifBlank { null }?.also { try { LocalDate.parse(it) } catch (_: Exception) { throw IllegalArgumentException(localized("Elige una fecha válida.")) } }
+ @Composable fun calendar(key: String, label: String, default: String = "", optional: Boolean = false) {
+  val storageKey = "${draft.scope}:$key"
+  LaunchedEffect(storageKey) { if (!draft.values.containsKey(storageKey)) draft.values[storageKey] = default }
+  key(storageKey) { CalendarDateField(label, value(key, default), enabled = !busy, optional = optional) { draft.set(key, it) } }
+ }
  @Composable fun text(key: String, label: String, default: String = "", numeric: Boolean = false, lines: Int = 1) {
   val storageKey = "${draft.scope}:$key"
   LaunchedEffect(storageKey) { if (!draft.values.containsKey(storageKey)) draft.values[storageKey] = default }
@@ -67,15 +91,29 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
  when (action) {
   "account" -> {
    f.text("name", localized("Nombre de la cuenta"))
-   val kind = f.choice("kind", localized("Tipo"), listOf("CASH" to localized("Depósito propio"), "PHYSICAL_CASH" to localized("Efectivo físico"), "LIABILITY" to localized("Tarjeta de crédito · deuda")))
+   val type = f.choice("kind", localized("Tipo"), accountTypeChoices())
+   val subtype = CashAccountSubtype.entries.find { it.name == type }
+   val kind = if (subtype != null) "CASH" else type
+   if (subtype == CashAccountSubtype.OTHER) f.text("customTypeName", localized("Nombre del tipo de cuenta"))
    val currency = f.choice("currency", localized("Moneda nativa"), Currency.entries.map { it.name to it.name })
    val eligibleProducts = snapshot.accounts.groupBy { it.productId }.filter { (_, accounts) -> accounts.all { it.kind == if (kind == "LIABILITY") "LIABILITY" else "CASH" } && accounts.none { it.currency.name == currency } && !accounts.first().productId.startsWith("cash") }
    val product = if (kind != "PHYSICAL_CASH") f.choice("product", localized("Agrupar en producto"), listOf("new" to localized("Crear producto separado")) + eligibleProducts.map { (id, accounts) -> id to accounts.first().name.substringBefore(" · ") }) else "new"
    f.text("opening", if (kind == "LIABILITY") localized("Deuda inicial confirmada (positiva)") else localized("Saldo inicial confirmado"), "0.00", true)
-   f.text("date", localized("Fecha de apertura · AAAA-MM-DD"), today())
+   f.calendar("date", localized("Fecha de apertura"), today())
    if (kind == "LIABILITY") f.text("limit", localized("Límite de crédito (no es efectivo)"), "0.00", true)
-   Text(localized("La moneda y el tipo quedan protegidos al existir historial. El nombre puede cambiar sin alterar los movimientos."))
-   command = { val id = draft.request(); F05Command.CreateAccount(id, "account-$id", if (kind == "PHYSICAL_CASH") "cash-$id" else if (product == "new") "product-$id" else product, f.required("name", localized("nombre")), Currency.valueOf(currency), if (kind == "PHYSICAL_CASH") "CASH" else kind, f.amount("opening", localized("saldo de apertura"), "0.00", true).let { if (kind == "LIABILITY") -it else it }, f.date(), if (kind == "LIABILITY") f.amount("limit", localized("límite"), "0.00", true) else 0) }
+   command = {
+    val id = draft.request()
+    val productId = when {
+     kind == "PHYSICAL_CASH" -> "cash-$id"
+     product == "new" -> "product-$id"
+     else -> product
+    }
+    val opening = f.amount("opening", localized("saldo de apertura"), "0.00", true)
+    F05Command.CreateAccount(id, "account-$id", productId, f.required("name", localized("nombre")), Currency.valueOf(currency),
+     if (kind == "PHYSICAL_CASH") "CASH" else kind, if (kind == "LIABILITY") -opening else opening, f.date(),
+     if (kind == "LIABILITY") f.amount("limit", localized("límite"), "0.00", true) else 0,
+     subtype, if (subtype == CashAccountSubtype.OTHER) f.required("customTypeName", localized("el nombre del tipo de cuenta")) else null)
+   }
   }
   "editAccount" -> {
    val current = selectedAccount
@@ -83,12 +121,16 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
     Text(localized("Cuenta no disponible."))
    } else {
     f.text("name", localized("Nombre de la cuenta"), current.name)
-    val currentKind = if (current.kind == "CASH" && current.productId.startsWith("cash")) "PHYSICAL_CASH" else current.kind
-    val kind = f.choice("kind", localized("Tipo"), listOf("CASH" to localized("Depósito propio"), "PHYSICAL_CASH" to localized("Efectivo físico"),
-     "LIABILITY" to localized("Tarjeta de crédito · deuda")), currentKind)
+    val currentType = current.accountTypeChoice()
+    val currentKind = if (currentType == "PHYSICAL_CASH") currentType else current.kind
+    val type = f.choice("kind", localized("Tipo"), accountTypeChoices(), currentType)
+    val subtype = CashAccountSubtype.entries.find { it.name == type }
+    val kind = if (subtype != null) "CASH" else type
+    val customTypeDefault = current.customTypeName.orEmpty()
+    if (subtype == CashAccountSubtype.OTHER) f.text("customTypeName", localized("Nombre del tipo de cuenta"), customTypeDefault)
     val currency = Currency.valueOf(f.choice("currency", localized("Moneda nativa"), Currency.entries.map { it.name to it.name }, current.currency.name))
     val currencyChanged = currency != current.currency
-    f.text("date", localized("Fecha de apertura · AAAA-MM-DD"), current.openingDate.orEmpty())
+    f.calendar("date", localized("Fecha de apertura"), current.openingDate.orEmpty(), optional = current.openingDate == null)
     val limitDefault = if (currencyChanged) "" else decimal(current.creditLimitMinor)
     val limitKey = "limit-${currency.name}"
     if (kind == "LIABILITY") f.text(limitKey, localized("Límite de crédito · {0}", currency.name), limitDefault, true)
@@ -110,13 +152,14 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
      } else null
      val openingDate = if (current.openingDate == null) f.optionalDate("date") else f.date("date", current.openingDate)
      val limit = if (kind == "LIABILITY") f.amount(limitKey, localized("límite"), limitDefault, allowZero = true) else 0L
+     val customTypeName = if (subtype == CashAccountSubtype.OTHER) f.required("customTypeName", localized("el nombre del tipo de cuenta"), customTypeDefault) else null
      F05Command.EditAccount(draft.request(), subject, f.required("name", localized("nombre"), current.name), currency, kind,
-      openingDate, limit, rate, current.currency, current.balanceMinor)
+      openingDate, limit, rate, current.currency, current.balanceMinor, subtype, customTypeName)
     }
    }
   }
   "rename" -> {
-   Text(localized("{0} · {1}. La moneda y el tipo se conservan.", selectedAccount?.currency, selectedAccount?.kind))
+   Text(localized("{0} · {1}. La moneda y el tipo se conservan.", selectedAccount?.currency, selectedAccount?.accountTypeLabel()))
    f.text("name", localized("Nombre de la cuenta"), selectedAccount?.name.orEmpty())
    command = { F05Command.RenameAccount(draft.request(), subject, f.required("name", localized("nombre"), selectedAccount?.name.orEmpty())) }
   }
@@ -135,17 +178,17 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
    val fundingPurpose = if (type == "CREDIT_PURCHASE" && funding.isNotBlank()) f.choice("fundingPurpose", localized("Propósito previsto (no se consume al comprar)"), listOf("" to localized("Sin reserva prevista")) + cash.find { it.id == funding }?.reserves.orEmpty().map { it.purposeId to it.name }, operation?.fundingPurposeId.orEmpty()) else ""
    Text(localized("Moneda: {0}", current?.currency ?: localized("Selecciona una cuenta")) + if (type == "CREDIT_PURCHASE" && !alreadyDeducted) localized(" · La compra aumenta la deuda. El pago se registra por separado.") else "")
    f.text("amount", localized("Importe"), operation?.let { decimal(it.amountMinor) }.orEmpty(), true)
-   f.text("date", localized("Fecha · AAAA-MM-DD"), operation?.date ?: today())
-   f.text("bookedDate", localized("Fecha contabilizada (si difiere) · AAAA-MM-DD"), operation?.bookedDate?.takeIf { it != operation.date }.orEmpty())
+   f.calendar("date", localized("Fecha"), operation?.date ?: today())
+   f.calendar("bookedDate", localized("Fecha contabilizada (si difiere)"), operation?.bookedDate?.takeIf { it != operation.date }.orEmpty(), optional = true)
    f.text("merchant", if (type == "INCOME") localized("Origen del ingreso") else localized("Comercio"), operation?.merchant.orEmpty())
-   f.text("category", localized("Categoría"), operation?.category.orEmpty())
+   f.category("category", localized("Categoría"), snapshot.categories, operation?.category.orEmpty())
    f.text("notes", localized("Notas (opcional)"), operation?.notes.orEmpty(), lines = 2)
    val count = f.value("splitCount", operation?.splits?.size?.toString() ?: "0").toIntOrNull() ?: 0
    Text(localized("Desglose por categoría · suma exacta al importe"), style = MaterialTheme.typography.titleMedium)
    val splitPurposes = mutableListOf<String?>()
    repeat(count) { index ->
     val initial = operation?.splits?.getOrNull(index)
-    f.text("splitCategory$index", localized("Categoría del desglose {0}", index + 1), initial?.category.orEmpty())
+    f.category("splitCategory$index", localized("Categoría del desglose {0}", index + 1), snapshot.categories, initial?.category.orEmpty())
     f.text("splitAmount$index", localized("Importe del desglose {0}", index + 1), initial?.let { decimal(it.minor) }.orEmpty(), true)
     val purpose = if (!alreadyDeducted) f.choice("splitPurpose$index", localized("Propósito del desglose {0}", index + 1), listOf("" to localized("Sin reserva")) + (current?.reserves.orEmpty().map { it.purposeId to it.name }), initial?.purposeId.orEmpty()).ifBlank { null } else null
     splitPurposes.add(purpose)
@@ -168,7 +211,7 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
   }
   "void", "refund" -> {
    InfoCard(localized("Movimiento original"), localized("{0} · {1}\nImporte {2}\nReembolsado {3}\nEl original y su auditoría se conservan.", operation?.date, operation?.merchant, operation?.let { decimal(it.amountMinor) }, operation?.let { decimal(it.refundedMinor) }), 3)
-   if (action == "refund") { f.text("amount", localized("Importe del reembolso parcial"), numeric = true); f.text("date", localized("Fecha · AAAA-MM-DD"), today()); f.text("bookedDate", localized("Fecha contabilizada (si difiere) · AAAA-MM-DD")) }
+   if (action == "refund") { f.text("amount", localized("Importe del reembolso parcial"), numeric = true); f.calendar("date", localized("Fecha"), today()); f.calendar("bookedDate", localized("Fecha contabilizada (si difiere)"), optional = true) }
    f.text("reason", localized("Motivo obligatorio"), lines = 2)
    val confirmed = f.check("confirmed", if (action == "void") localized("Confirmo la anulación y revisión de conciliaciones afectadas") else localized("Confirmo el reembolso y su restitución de reserva"))
    command = { require(confirmed) { localized("Revisa la vista previa y confirma.") }; if (action == "void") F05Command.Void(draft.request(), subject, f.required("reason", localized("motivo"))) else F05Command.Refund(draft.request(), subject, f.amount(), f.date(), f.required("reason", localized("motivo")), f.optionalDate("bookedDate")) }
@@ -185,9 +228,9 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
    f.text("amount", localized("Importe real de salida"), numeric = true)
    if (action == "fx") { f.text("received", localized("Importe real recibido"), numeric = true); f.text("rate", localized("Tasa registrada (obligatoria)"), numeric = true); f.text("rateSource", localized("Fuente de tasa (obligatoria)")); Text(localized("La fecha de la operación también fecha el registro de conversión. No se calcula ningún importe ni tasa por ti.")) }
    f.text("fee", localized("Comisión en moneda de origen"), "0.00", true)
-   f.text("date", localized("Fecha · AAAA-MM-DD"), today())
-   f.text("bookedDate", localized("Fecha contabilizada (si difiere) · AAAA-MM-DD"))
-   if (action == "fx") f.text("rateDate", localized("Fecha de tasa (si difiere) · AAAA-MM-DD"))
+   f.calendar("date", localized("Fecha"), today())
+   f.calendar("bookedDate", localized("Fecha contabilizada (si difiere)"), optional = true)
+   if (action == "fx") f.calendar("rateDate", localized("Fecha de tasa (si difiere)"), optional = true)
    f.text("notes", localized("Notas (opcional)"), lines = 2)
    val purpose = if (action == "moveReserve") f.choice("purpose", localized("Reserva que viaja con el dinero"), origin?.reserves.orEmpty().filter { it.minor > 0 }.map { it.purposeId to "${it.name} · ${decimal(it.minor)}" }) else ""
    val allocations = mutableListOf<() -> CreditPaymentAllocation>()
@@ -231,7 +274,7 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
   "reconcile" -> {
    val account = selectedAccount
    Text("${account?.name} · ${account?.currency}")
-   f.text("date", localized("Fecha de corte · AAAA-MM-DD"), today())
+   f.calendar("date", localized("Fecha de corte"), today())
    val balanceType = f.choice("balanceType", localized("Tipo de saldo observado"), listOf("BOOKED" to localized("Contabilizado"), "AVAILABLE" to localized("Disponible")))
    f.text("observed", localized("Saldo observado (puede ser negativo)"), numeric = true)
    val known = f.check("holdsKnown", localized("Revisé todas las retenciones al corte; sus importes son conocidos"))
@@ -256,7 +299,7 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
    val account = f.account("account", localized("Cuenta o tarjeta"), active)
    f.text("merchant", localized("Comercio"))
    f.text("amount", localized("Importe retenido"), numeric = true)
-   f.text("date", localized("Fecha de autorización · AAAA-MM-DD"), today())
+   f.calendar("date", localized("Fecha de autorización"), today())
    Text(localized("Una autorización queda pendiente y separada del saldo contabilizado. Confirma el cargo únicamente cuando esté contabilizado."))
    command = { require(account.isNotBlank()) { localized("Selecciona una cuenta.") }; F05Command.CreateHold(draft.request(), account, f.amount(), f.required("merchant", localized("comercio")), f.date()) }
   }
@@ -268,7 +311,7 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
     else -> hold?.status.orEmpty()
    }
    Text(localized("{0} · {1}\nEstado: {2}", hold?.merchant, hold?.let { decimal(it.minor) }, holdStatus))
-   if (action == "confirmHold") { f.text("category", localized("Categoría del cargo")); f.text("date", localized("Fecha del cargo · AAAA-MM-DD"), today()); f.text("bookedDate", localized("Fecha contabilizada (si difiere) · AAAA-MM-DD")); f.text("notes", localized("Notas (opcional)"), lines = 2) }
+   if (action == "confirmHold") { f.category("category", localized("Categoría del cargo"), snapshot.categories); f.calendar("date", localized("Fecha del cargo"), today()); f.calendar("bookedDate", localized("Fecha contabilizada (si difiere)"), optional = true); f.text("notes", localized("Notas (opcional)"), lines = 2) }
    val confirmed = f.check("confirmed", if (action == "confirmHold") localized("Verifiqué que el cargo está contabilizado; sustituye la retención") else localized("Verifiqué que la autorización fue liberada sin cargo"))
    command = { require(confirmed) { localized("Confirma el estado real de la retención.") }; if (action == "confirmHold") F05Command.ConfirmHold(draft.request(), subject, f.required("category", localized("categoría")), f.date(), f.value("notes"), f.optionalDate("bookedDate")) else F05Command.ReleaseHold(draft.request(), subject) }
   }

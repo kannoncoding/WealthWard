@@ -50,9 +50,10 @@ class F05Repository(private val db: WealthDatabase) {
    val funded = reserves.filter { it.accountId == a.id }
    val reserved = exact(funded.fold(BigInteger.ZERO) { n,r -> n.add(BigInteger.valueOf(r.minor)) })
    val held = exact(holds.filter { it.accountId == a.id && it.status == "PENDING" }.fold(BigInteger.ZERO) { n,h -> n.add(BigInteger.valueOf(h.minor)) })
-   AccountDetail(a.id,m.getString("productId"),a.name,Currency.valueOf(a.currency),a.kind,m.text("openingDate"),m.getBoolean("archived"),balance,reserved,sub(balance,reserved),held,funded,recs.lastOrNull { it.accountId == a.id },a.creditLimitMinor,a.openingMinor)
+   AccountDetail(a.id,m.getString("productId"),a.name,Currency.valueOf(a.currency),a.kind,m.text("openingDate"),m.getBoolean("archived"),balance,reserved,sub(balance,reserved),held,funded,recs.lastOrNull { it.accountId == a.id },a.creditLimitMinor,a.openingMinor,
+    m.text("cashSubtype")?.let(CashAccountSubtype::valueOf),m.text("customTypeName"))
   }
-  return F05Snapshot(accounts,operations,holds,recs,state.list("audit").map { AuditDetail(it.getString("requestId"),it.getString("action"),it.getString("subjectId"),it.getString("reason")) })
+  return F05Snapshot(accounts,operations,holds,recs,state.list("audit").map { AuditDetail(it.getString("requestId"),it.getString("action"),it.getString("subjectId"),it.getString("reason")) },state.categoryCatalog())
  }
  internal fun operation(o: JSONObject) = OperationDetail(o.getString("id"),o.getString("date"),o.getString("type"),o.getString("accountId"),o.text("destinationId"),o.getLong("amountMinor"),o.longOrNull("destinationMinor"),o.getString("merchant"),o.getString("category"),o.getString("notes"),o.list("splits").map { ExpenseSplit(it.getString("category"),it.getLong("minor"),it.text("purposeId")) },o.text("originalId"),o.getBoolean("voided"),o.getLong("refundedMinor"),o.getLong("expenseMinor"),o.optLong("feeMinor"),o.text("rate"),o.text("rateSource"),o.optString("bookedDate",o.getString("date")),o.optString("rateDate",o.getString("date")),o.optString("fundingAccountId").takeIf { it.isNotBlank() && it!="null" },o.optString("fundingPurposeId").takeIf { it.isNotBlank() && it!="null" },o.optLong("settledMinor"),o.optJSONArray("creditAllocations")?.let { a -> (0 until a.length()).map { i -> val e=a.getJSONObject(i); CreditPaymentAllocation(e.getString("purchaseId"),e.getLong("minor"),e.text("purposeId"),e.getLong("sourceMinor")) } } ?: emptyList(),o.optBoolean("previouslyDeducted"))
  private fun reconciliation(o: JSONObject) = ReconciliationDetail(o.getString("id"),o.getString("accountId"),o.getString("cutDate"),o.getString("balanceType"),o.getLong("observedMinor"),o.getLong("recordedMinor"),o.getLong("differenceMinor"),(0 until o.getJSONArray("reviewedIds").length()).map { o.getJSONArray("reviewedIds").getString(it) },o.getString("status"),o.getString("reason"))
@@ -70,6 +71,7 @@ class F05Repository(private val db: WealthDatabase) {
   val state = load()
   if(!commitment) validateCommitmentBoundary(command,state)
   val accountEditReason = apply(command,state)
+  state.saveCategoryCatalog()
   validatePlanningRestore(state,dao.accounts())
   snapshot(state) // Reconstruct all balances before any commit, with checked integer arithmetic.
   val auditReason = when (command) {
@@ -95,6 +97,8 @@ class F05Repository(private val db: WealthDatabase) {
   val kind = if (isPhysicalCash) "CASH" else c.kind
   val openingDate = c.openingDate?.let(::date)
   if (c.name.isBlank() || kind !in setOf("CASH", "LIABILITY")) invalid("Completa el nombre y el tipo de cuenta.")
+  val customTypeName = c.customTypeName?.trim()
+  if (!validCashSubtype(kind, isPhysicalCash, c.cashSubtype, customTypeName)) invalid("Completa un tipo válido para la cuenta.")
   if (c.creditLimitMinor < 0 || kind == "CASH" && c.creditLimitMinor != 0L) invalid("El límite debe ser cero o positivo y corresponde a una tarjeta de crédito.")
   if (c.expectedCurrency.name != previous.currency) invalid("La moneda de la cuenta cambió. Vuelve a abrir el formulario.")
   val currencyChanged = previous.currency != c.currency.name
@@ -150,9 +154,14 @@ class F05Repository(private val db: WealthDatabase) {
   dao.updateAccount(previous.copy(name = c.name.trim(), currency = c.currency.name, kind = kind,
    openingMinor = updatedOpening, creditLimitMinor = c.creditLimitMinor))
   if (state.find("accounts", previous.id) == null) state.appendRow("accounts", metadata)
+  val previousSubtype = metadata.text("cashSubtype")
+  val previousCustomTypeName = metadata.text("customTypeName")
   metadata.put("openingDate", c.openingDate ?: JSONObject.NULL).put("productId", updatedProduct)
+  metadata.put("cashSubtype", c.cashSubtype?.name).put("customTypeName", customTypeName)
   return obj("previousName" to previous.name,"name" to c.name.trim(),
    "previousKind" to (if (wasPhysicalCash) "PHYSICAL_CASH" else previous.kind),"kind" to c.kind,
+   "previousCashSubtype" to previousSubtype,"cashSubtype" to c.cashSubtype?.name,
+   "previousCustomTypeName" to previousCustomTypeName,"customTypeName" to customTypeName,
    "previousProductId" to productId,"productId" to updatedProduct,
    "previousCurrency" to previous.currency,"currency" to c.currency.name,"manualRate" to c.conversionRate,
    "previousOpeningMinor" to previous.openingMinor,"openingMinor" to updatedOpening,
@@ -172,9 +181,13 @@ class F05Repository(private val db: WealthDatabase) {
    is F05Command.CreateAccount -> {
     date(c.openingDate)
     if(c.id.isBlank() || c.productId.isBlank() || c.name.isBlank() || c.kind !in setOf("CASH","LIABILITY") || c.creditLimitMinor < 0) invalid("Account name, product, currency and valid type are required")
+    val customTypeName = c.customTypeName?.trim()
+    if (!validCashSubtype(c.kind, c.productId.startsWith("cash"), c.cashSubtype, customTypeName)) invalid("Completa un tipo válido para la cuenta.")
     if(dao.accounts().any { it.id == c.id }) invalid("Account already exists")
     dao.insertAccount(AccountEntity(c.id,c.name,c.currency.name,c.kind,c.openingMinor,c.creditLimitMinor))
-    state.appendRow("accounts",obj("id" to c.id,"productId" to c.productId,"openingDate" to c.openingDate,"archived" to false))
+    val metadata = obj("id" to c.id,"productId" to c.productId,"openingDate" to c.openingDate,"archived" to false)
+    metadata.put("cashSubtype", c.cashSubtype?.name).put("customTypeName", customTypeName)
+    state.appendRow("accounts",metadata)
    }
    is F05Command.RenameAccount -> {
     val a=account(c.accountId,state,false); if(c.name.isBlank()) invalid("Account name is required")
@@ -524,6 +537,7 @@ class F05Repository(private val db: WealthDatabase) {
    fun JSONArray.rows() = (0 until length()).map { getJSONObject(it) }
    fun JSONObject.integer(key:String):Long { val n=get(key); if(n !is Int && n !is Long) fail(); return (n as Number).toLong() }
    val state=JSONObject(payload)
+   state.validateCategoryCatalog()
    validatePlanningRestore(state,accounts)
    validateCommitmentRestore(state,requests,accounts,transactions,postings)
    val accountMap=accounts.associateBy { it.id }; val tx=transactions.associateBy { it.id }
@@ -540,7 +554,13 @@ class F05Repository(private val db: WealthDatabase) {
    val reconciliations=state.getJSONArray("reconciliations").rows().associateBy { it.getString("id") }
    val refundsByOriginal=operations.filter { it.getString("type")=="REFUND" }.groupBy { it.getString("originalId") }
    state.getJSONArray("accounts").rows().forEach { m ->
-    if(m.getString("id") !in accountMap || m.getString("productId").isBlank()) fail()
+    val account = accountMap[m.getString("id")] ?: fail()
+    val productId = m.getString("productId")
+    if (productId.isBlank()) fail()
+    val subtype = if (m.isNull("cashSubtype")) null else
+     CashAccountSubtype.entries.find { it.name == m.get("cashSubtype") } ?: fail()
+    val customTypeName = if (m.isNull("customTypeName")) null else m.get("customTypeName") as? String ?: fail()
+    if (!validCashSubtype(account.kind, productId.startsWith("cash"), subtype, customTypeName)) fail()
     m.getBoolean("archived"); if(!m.isNull("openingDate")) LocalDate.parse(m.getString("openingDate"))
    }
    operations.forEach { o ->
@@ -665,10 +685,25 @@ class F05Repository(private val db: WealthDatabase) {
  }
 }
 
+private fun validCashSubtype(kind: String, physicalCash: Boolean, subtype: CashAccountSubtype?, customTypeName: String?): Boolean =
+ (subtype == null || kind == "CASH" && !physicalCash) &&
+  (if (subtype == CashAccountSubtype.OTHER) !customTypeName.isNullOrBlank() else customTypeName == null)
+
 internal fun canonicalLedgerCommand(value: Any?): Any = when(value) {
   null -> JSONObject.NULL
   is String, is Number, is Boolean -> value
   is Enum<*> -> value.name
   is Iterable<*> -> JSONArray(value.map { canonicalLedgerCommand(it) })
-  else -> JSONObject().apply { put("_type",value.javaClass.simpleName); value.javaClass.declaredFields.filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }.sortedBy { it.name }.forEach { field -> field.isAccessible=true; if(field.name != "previouslyDeducted" || field.get(value) == true) put(field.name,canonicalLedgerCommand(field.get(value))) } }
+  else -> JSONObject().apply {
+   put("_type", value.javaClass.simpleName)
+   value.javaClass.declaredFields.filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }.sortedBy { it.name }.forEach { field ->
+    field.isAccessible = true
+    val fieldValue = field.get(value)
+    when (field.name) {
+     "previouslyDeducted" -> if (fieldValue == true) put(field.name, canonicalLedgerCommand(fieldValue)) else Unit
+     "cashSubtype", "customTypeName" -> if (fieldValue != null) put(field.name, canonicalLedgerCommand(fieldValue)) else Unit
+     else -> put(field.name, canonicalLedgerCommand(fieldValue))
+    }
+   }
+  }
  }

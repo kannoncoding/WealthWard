@@ -212,12 +212,16 @@ private fun UpcomingPaymentRow(due: Due, month: String, onClick: (() -> Unit)? =
         .then(click).padding(horizontal = 3.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(due.name, style = MaterialTheme.typography.titleMedium)
-            due.occurrence?.nominalMonth?.let { origin ->
-                val originMonth = YearMonth.parse(origin)
-                val currentMonth = YearMonth.parse(month)
-                val monthFormat = DateTimeFormatter.ofPattern(if (originMonth.year == currentMonth.year) "MMMM" else "MMMM uuuu", AppLanguage.current.locale)
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(due.name, style = MaterialTheme.typography.titleMedium)
+                due.occurrence?.nominalMonth?.let { origin ->
+                    val originMonth = YearMonth.parse(origin)
+                    val currentMonth = YearMonth.parse(month)
+                    val monthFormat = DateTimeFormatter.ofPattern(if (originMonth.year == currentMonth.year) "MMMM" else "MMMM uuuu", AppLanguage.current.locale)
                     if (originMonth < currentMonth) PaymentMonthTag(localized("Pendiente"), overdue = true)
                     PaymentMonthTag(originMonth.format(monthFormat).replaceFirstChar { it.titlecase() })
                 }

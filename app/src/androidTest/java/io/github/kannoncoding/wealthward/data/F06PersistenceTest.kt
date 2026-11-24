@@ -17,6 +17,31 @@ class F06PersistenceTest {
  private suspend fun F05Repository.cash(amount:Long=50000000,id:String="cash",currency:Currency=Currency.CRC,kind:String="CASH") { execute(F05Command.CreateAccount("create:$id",id,id,"Account $id",currency,kind,amount,"2026-01-01")) }
  private fun bill(id:String="bill",minor:Long=2500000,month:String="2027-01",frequency:Recurrence=Recurrence.MONTHLY)=RecurringTemplate(id,1,"Service $id","Essentials",PlanNature.FIXED,minor,Currency.CRC,month,frequency,31,suggestedAccountId="cash")
  private suspend fun fails(block:suspend ()->Unit) { try { block(); fail("Expected invalid command") } catch (_:DomainFailure) {} }
+ @Test fun salaryConfirmationOnlyCreditsOnceAndUsesTheAssignedAccount(): Unit = runBlocking {
+  val db = database()
+  try {
+   val repo = FinanceRepository(db)
+   repo.workspace.cash(id = "salary-account", amount = 10_000)
+   repo.workspace.cash(id = "different-account", amount = 0)
+   val now = java.time.LocalDate.now(BusinessTime.zone)
+   val month = java.time.YearMonth.from(now).toString()
+   val id = "salary:$month:0"
+   repo.planning.execute(F06Command.SaveSalary("salary-rule",
+    SalaryVersion("rule", month, 80_000, Currency.CRC, "salary-account", scheduleDay = 1)))
+   repo.planning.execute(F06Command.OpenPeriod("open-salary", month))
+   assertTrue(repo.workspace.snapshot().operations.isEmpty())
+   fails { repo.planning.confirmSalary(id, "different-account", 80_000) }
+   repo.planning.confirmSalary(id, "salary-account", 80_000)
+   repo.planning.confirmSalary(id, "salary-account", 80_000)
+   val ledger = repo.workspace.snapshot()
+   val receipt = ledger.operations.single()
+   assertEquals("INCOME", receipt.type)
+   assertEquals("salary-account", receipt.accountId)
+   assertEquals(now.toString(), receipt.date)
+   assertEquals(90_000L, ledger.accounts.first { it.id == "salary-account" }.balanceMinor)
+   assertEquals(listOf(receipt.id), repo.planning.snapshot(month).occurrences.single().paymentIds)
+  } finally { db.close() }
+ }
  @Test fun rolloverKeepsOriginalObligationsAndDoesNotPostTheSalary(): Unit = runBlocking {
   val db = database()
   try {

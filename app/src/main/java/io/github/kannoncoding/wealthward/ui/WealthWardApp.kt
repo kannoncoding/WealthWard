@@ -126,10 +126,57 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
   var subject by rememberSaveable { mutableStateOf("") }
   var accountId by rememberSaveable { mutableStateOf("") }
   var filter by rememberSaveable { mutableStateOf("") }
+  var movementCategory by rememberSaveable { mutableStateOf("") }
+  var accountMovementCategory by rememberSaveable(accountId) { mutableStateOf("") }
   var failure by rememberSaveable { mutableStateOf("") }
   var success by rememberSaveable { mutableStateOf("") }
   var busy by remember { mutableStateOf(false) }
   var ready by remember { mutableStateOf(false) }
+  var deferSalary by rememberSaveable { mutableStateOf(false) }
+  var salarySaving by remember { mutableStateOf(false) }
+  var salaryError by remember { mutableStateOf("") }
+  val dueSalary = if (ready && screen.isEmpty() && !deferSalary) {
+   plan.occurrences.asSequence().filter {
+    it.templateId == "salary" && it.paymentPendingMinor > 0 && it.dueDate <= currentDay.toString()
+   }.mapNotNull { occurrence ->
+    snapshot.accounts.firstOrNull {
+     it.id == occurrence.suggestedAccountId && !it.archived && it.kind == "CASH" && it.currency == occurrence.currency
+    }?.let { occurrence to it }
+   }.maxByOrNull { it.first.dueDate }
+  } else null
+  dueSalary?.let { (salary, account) ->
+   AlertDialog(
+    onDismissRequest = { if (!salarySaving) { deferSalary = true; salaryError = "" } },
+    title = { Text(localized("Confirmación de salario")) },
+    text = {
+     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      Text(localized("¿Recibiste este salario programado para el {0}?", salary.dueDate))
+      Text(money(salary.paymentPendingMinor, salary.currency), style = MaterialTheme.typography.titleLarge)
+      Text(localized("En la cuenta: {0}", account.name))
+      if (salaryError.isNotEmpty()) Text(salaryError, color = MaterialTheme.colorScheme.error)
+     }
+    },
+    dismissButton = { TextButton(enabled = !salarySaving, onClick = { deferSalary = true; salaryError = "" }) { Text(localized("Ahora no")) } },
+    confirmButton = {
+     TextButton(enabled = !salarySaving, onClick = {
+      salarySaving = true
+      salaryError = ""
+      scope.launch {
+       try {
+        planning.confirmSalary(salary.id, account.id, salary.paymentPendingMinor)
+        loadedPlan = planning.snapshot(planningMonth)
+       } catch (e: CancellationException) {
+        throw e
+       } catch (e: Exception) {
+        salaryError = userError(e)
+       } finally {
+        salarySaving = false
+       }
+      }
+     }) { Text(localized("Confirmar ingreso")) }
+    },
+   )
+  }
   val projectionLimits by container.files.projectionLimits.collectAsStateWithLifecycle(emptyMap())
   LaunchedEffect(Unit) {
    while (true) {
@@ -149,7 +196,11 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
    draftPreferences.all.forEach { (key, value) -> if (value is String) put(key, value) }
   } }
   val encodedSubject = android.net.Uri.encode(subject)
-  val draftScope = if (screen.startsWith("f06") || screen.startsWith("f07")) "$screen:$encodedSubject:$formMonth" else "$screen:$encodedSubject"
+  val draftScope = when {
+   screen == "f08" -> "$screen:$encodedSubject:$planningMonth"
+   screen.startsWith("f06") || screen.startsWith("f07") -> "$screen:$encodedSubject:$formMonth"
+   else -> "$screen:$encodedSubject"
+  }
   val drafts = remember(saved, draftScope) { Drafts(saved, draftPreferences).apply { this.scope = draftScope } }
   var confirmClear by remember(draftScope) { mutableStateOf(false) }
   var formRevision by remember(draftScope) { mutableIntStateOf(0) }
@@ -330,17 +381,19 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
       } else if (screen == "f08") {
        ProjectionScreen(planningMonth, projection, projectionSettings, {
         val updated = it
+        val submitted = drafts.values.filterKeys { key -> key.startsWith("${drafts.scope}:") }
         scope.launch {
          try {
           container.files.saveProjectionLimits(updated.base, updated.limits.getValue(updated.base))
           projectionDraft = updated
+          if (drafts.values.filterKeys { key -> key.startsWith("${drafts.scope}:") } == submitted) drafts.clear()
          } catch (e: CancellationException) {
           throw e
          } catch (_: Exception) {
           failure = localized("No se pudieron guardar los ajustes del pronóstico.")
          }
         }
-       }, plan, commitmentPlan, snapshot, ::open)
+       }, plan, commitmentPlan, snapshot, ::open, draft = drafts)
       } else if (screen.startsWith("f10")) {
        if (ready) F10Screen(screen, container.files, busy, { busy = it }, { failure = it }, { success = it })
       } else if(screen.startsWith("f06")) F06Form(screen,subject,formMonth,plan,snapshot,drafts,busy,{ failure=it },::submitPlan,{ back() })
@@ -354,7 +407,11 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
        GoldClasp()
        Text(localized("Movimientos recientes"), modifier = Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
        OutlinedTextField(filter, { filter = it }, label = { Text(localized("Filtrar historial: comercio, fecha o categoría")) }, modifier = Modifier.fillMaxWidth())
-       val movements = snapshot.operations.filter { listOf(it.merchant, it.category, it.date, it.notes).any { part -> part.contains(filter, true) } }
+       MovementCategoryFilter(snapshot.categories, movementCategory) { movementCategory = it }
+       val movements = snapshot.operations.filter { operation ->
+        operation.inCategory(movementCategory) && (listOf(operation.historyTitle(), operation.date, operation.notes).any { it.contains(filter, true) } ||
+         operation.matchesCategory(filter))
+       }
        OperationCards(snapshot, movements, ::open)
        if (movements.isNotEmpty() && snapshot.holds.isNotEmpty()) GoldClasp()
        HoldCards(snapshot, ::open)
@@ -368,7 +425,7 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
          val bills = monthlyBills[account.id].orEmpty()
          AccountCard(account, bills, detailed = true)
          GoldClasp()
-         AccountMonthlyBills(bills, ::open)
+         AccountMonthlyBills(bills, plan.templates, ::open)
          GoldClasp()
          AccountMonthlySavings(account, commitmentPlan, currentMonth)
          GoldClasp()
@@ -395,17 +452,17 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
          GoldClasp()
          Text(localized("Movimientos del mes"), style = MaterialTheme.typography.titleLarge)
          OutlinedTextField(filter, { filter = it }, label = { Text(localized("Filtrar historial de esta cuenta")) }, modifier = Modifier.fillMaxWidth())
-         OperationCards(snapshot, snapshot.operations.filter { (it.bookedDate ?: it.date).startsWith(currentMonth) && (it.accountId == account.id || it.destinationId == account.id) && listOf(it.merchant, it.category, it.date, it.type).any { part -> part.contains(filter, true) } }, ::open)
+         MovementCategoryFilter(snapshot.categories, accountMovementCategory) { accountMovementCategory = it }
+         OperationCards(snapshot, snapshot.operations.filter {
+          (it.bookedDate ?: it.date).startsWith(currentMonth) && (it.accountId == account.id || it.destinationId == account.id) &&
+           it.inCategory(accountMovementCategory) && (it.matchesCategory(filter) || listOf(it.merchant, it.date, it.type).any { part -> part.contains(filter, true) })
+         }, ::open)
          HoldCards(snapshot.copy(holds = snapshot.holds.filter { it.accountId == account.id && it.date.startsWith(currentMonth) }), ::open)
         }
        } else {
-        snapshot.accounts.groupBy { it.productId }.entries.forEachIndexed { groupIndex, (product, accounts) ->
-         if (groupIndex > 0) GoldClasp()
-         Text(if (product.startsWith("cash")) localized("Efectivo") else accounts.first().name.substringBefore(" · "), style = MaterialTheme.typography.titleLarge)
-         accounts.forEachIndexed { index, account ->
-          if (index > 0) GoldClasp()
-          AccountCard(account, monthlyBills[account.id].orEmpty()) { rememberPage(); accountId = account.id; filter = ""; success = "" }
-         }
+        snapshot.accounts.groupBy { it.productId }.values.flatten().forEachIndexed { index, account ->
+         if (index > 0) GoldClasp()
+         AccountCard(account, monthlyBills[account.id].orEmpty()) { rememberPage(); accountId = account.id; filter = ""; success = "" }
         }
        }
       }
@@ -472,9 +529,12 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
  }
 }
 @Composable private fun AccountCard(account: AccountDetail, bills: List<PlannedOccurrence>, detailed: Boolean = false, onClick: (() -> Unit)? = null) {
- Column(Modifier.fillMaxWidth().panelShape().then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier)
+ Column(Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier),
+  verticalArrangement = Arrangement.spacedBy(6.dp)) {
+ Text(account.name + if (account.archived) localized(" · Archivada") else "", style = MaterialTheme.typography.titleLarge)
+ Column(Modifier.fillMaxWidth().panelShape()
   .padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-   Text(account.name + if (account.archived) localized(" · Archivada") else "", style = MaterialTheme.typography.titleMedium)
+   Text(account.accountTypeLabel(), style = MaterialTheme.typography.titleMedium)
    val palette = LocalPalette.current
    val label = when {
     account.kind != "LIABILITY" -> localized("Saldo contabilizado")
@@ -502,13 +562,41 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
    if (detailed) Text(localized("Retenciones pendientes {0}", money(account.heldMinor, account.currency)))
    if (detailed && account.kind != "LIABILITY") Text(localized("Disponible tras retenciones {0} {1}", account.currency, BigDecimal.valueOf(account.balanceMinor, 2).subtract(BigDecimal.valueOf(account.heldMinor, 2)).toPlainString()))
  }
+ }
 }
+private fun OperationDetail.inCategory(id: String) =
+ id.isEmpty() || categoryId(category) == id || splits.any { categoryId(it.category) == id }
+
+private fun OperationDetail.historyTitle() =
+ if (id.startsWith("salary-receipt:")) localized("Ingreso de salario") else merchant.ifBlank { operationLabel(this) }
+
+@Composable private fun MovementCategoryFilter(categories: List<LedgerCategory>, selected: String, select: (String) -> Unit) {
+ if (categories.isEmpty()) return
+ var expanded by remember { mutableStateOf(false) }
+ val all = localized("Todas las categorías")
+ Box {
+  OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+   Text(categories.firstOrNull { it.id == selected }?.name ?: all)
+  }
+  DropdownMenu(expanded, onDismissRequest = { expanded = false }) {
+   DropdownMenuItem(text = { Text(all) }, onClick = { select(""); expanded = false })
+   categories.forEach { category ->
+    DropdownMenuItem(text = { Text(category.name) }, onClick = { select(category.id); expanded = false })
+   }
+  }
+ }
+}
+
 @Composable private fun OperationCards(snapshot: F05Snapshot, operations: List<OperationDetail>, open: (String, String) -> Unit) {
  if (operations.isEmpty()) Text(localized("No hay movimientos con este filtro."))
- operations.reversed().forEach { operation ->
+ val categoryNames = snapshot.categories.associate { it.id to it.name }
+ fun categoryLabel(value: String) = categoryNames[categoryId(value)] ?: value
+ Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+ operations.asReversed().forEachIndexed { index, operation ->
+  if (index > 0) GoldClasp()
   val account = snapshot.accounts.find { it.id == operation.accountId }
   Panel {
-   RecordHeading("${operation.date} · ${operation.merchant.ifBlank { operationLabel(operation) }}", "${account?.name.orEmpty()}\n${listOf(operation.category, operationLabel(operation)).filter { it.isNotBlank() }.distinct().joinToString(" · ")}${if (operation.voided) localized(" · ANULADO") else ""}\n${operation.notes}" + if (operation.refundedMinor > 0) localized("\nReembolsado {0}", decimal(operation.refundedMinor)) else "", amount = money(operation.amountMinor, account?.currency ?: Currency.CRC))
+   RecordHeading("${operation.date} · ${operation.historyTitle()}", "${account?.name.orEmpty()}\n${listOf(categoryLabel(operation.category), operationLabel(operation)).filter { it.isNotBlank() }.distinct().joinToString(" · ")}${if (operation.voided) localized(" · ANULADO") else ""}\n${operation.notes}" + if (operation.refundedMinor > 0) localized("\nReembolsado {0}", decimal(operation.refundedMinor)) else "", amount = money(operation.amountMinor, account?.currency ?: Currency.CRC))
    if (operation.bookedDate != null && operation.bookedDate != operation.date) Text(localized("Contabilizado: {0}", operation.bookedDate))
    operation.destinationId?.let { id -> snapshot.accounts.find { it.id == id }?.let { target -> Text(localized("Destino {0} · {1} {2}", target.name, target.currency, operation.destinationMinor?.let { decimal(it) }.orEmpty())) } }
    if (operation.rate != null) Text(localized("Tasa registrada {0} · {1} · {2}", operation.rate, operation.rateSource.orEmpty(), operation.rateDate ?: operation.date))
@@ -520,7 +608,7 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
     Text(localized("Origen previsto: ") + (snapshot.accounts.find { it.id == operation.fundingAccountId }?.name ?: localized("Sin confirmar")) + (operation.fundingPurposeId?.let { purpose -> " · " + (snapshot.accounts.flatMap { it.reserves }.find { it.purposeId == purpose }?.name ?: localized("Reserva prevista")) } ?: ""))
    }
    operation.creditAllocations.forEach { allocation -> Text(localized("Aplicado a {0}: {1} · ", snapshot.operations.find { it.id == allocation.purchaseId }?.merchant ?: localized("Compra"), decimal(allocation.minor)) + if (allocation.purposeId == null) localized("Sin asignar") else localized("Reserva financiada")) }
-   if (operation.splits.isNotEmpty()) operation.splits.forEach { Text("${it.category}: ${decimal(it.minor)}", style = MaterialTheme.typography.bodySmall) }
+   operation.splits.forEach { Text("${categoryLabel(it.category)}: ${decimal(it.minor)}", style = MaterialTheme.typography.bodySmall) }
    val feeChild = operation.id.endsWith(":fee")
    if (!operation.voided && !feeChild && operation.type !in listOf("REFUND", "REVERSAL", "ADJUSTMENT", "DEBT_PAYMENT", "DEBT_ADJUSTMENT", "DEBT_REVERSAL")) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -530,6 +618,7 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
     }
    }
   }
+ }
  }
 }
 @Composable private fun HoldCards(snapshot: F05Snapshot, open: (String, String) -> Unit) {
