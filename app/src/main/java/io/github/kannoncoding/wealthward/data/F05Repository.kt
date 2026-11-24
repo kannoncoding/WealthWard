@@ -54,7 +54,7 @@ class F05Repository(private val db: WealthDatabase) {
   }
   return F05Snapshot(accounts,operations,holds,recs,state.list("audit").map { AuditDetail(it.getString("requestId"),it.getString("action"),it.getString("subjectId"),it.getString("reason")) })
  }
- internal fun operation(o: JSONObject) = OperationDetail(o.getString("id"),o.getString("date"),o.getString("type"),o.getString("accountId"),o.text("destinationId"),o.getLong("amountMinor"),o.longOrNull("destinationMinor"),o.getString("merchant"),o.getString("category"),o.getString("notes"),o.list("splits").map { ExpenseSplit(it.getString("category"),it.getLong("minor"),it.text("purposeId")) },o.text("originalId"),o.getBoolean("voided"),o.getLong("refundedMinor"),o.getLong("expenseMinor"),o.optLong("feeMinor"),o.text("rate"),o.text("rateSource"),o.optString("bookedDate",o.getString("date")),o.optString("rateDate",o.getString("date")),o.optString("fundingAccountId").takeIf { it.isNotBlank() && it!="null" },o.optString("fundingPurposeId").takeIf { it.isNotBlank() && it!="null" },o.optLong("settledMinor"),o.optJSONArray("creditAllocations")?.let { a -> (0 until a.length()).map { i -> val e=a.getJSONObject(i); CreditPaymentAllocation(e.getString("purchaseId"),e.getLong("minor"),e.text("purposeId"),e.getLong("sourceMinor")) } } ?: emptyList())
+ internal fun operation(o: JSONObject) = OperationDetail(o.getString("id"),o.getString("date"),o.getString("type"),o.getString("accountId"),o.text("destinationId"),o.getLong("amountMinor"),o.longOrNull("destinationMinor"),o.getString("merchant"),o.getString("category"),o.getString("notes"),o.list("splits").map { ExpenseSplit(it.getString("category"),it.getLong("minor"),it.text("purposeId")) },o.text("originalId"),o.getBoolean("voided"),o.getLong("refundedMinor"),o.getLong("expenseMinor"),o.optLong("feeMinor"),o.text("rate"),o.text("rateSource"),o.optString("bookedDate",o.getString("date")),o.optString("rateDate",o.getString("date")),o.optString("fundingAccountId").takeIf { it.isNotBlank() && it!="null" },o.optString("fundingPurposeId").takeIf { it.isNotBlank() && it!="null" },o.optLong("settledMinor"),o.optJSONArray("creditAllocations")?.let { a -> (0 until a.length()).map { i -> val e=a.getJSONObject(i); CreditPaymentAllocation(e.getString("purchaseId"),e.getLong("minor"),e.text("purposeId"),e.getLong("sourceMinor")) } } ?: emptyList(),o.optBoolean("previouslyDeducted"))
  private fun reconciliation(o: JSONObject) = ReconciliationDetail(o.getString("id"),o.getString("accountId"),o.getString("cutDate"),o.getString("balanceType"),o.getLong("observedMinor"),o.getLong("recordedMinor"),o.getLong("differenceMinor"),(0 until o.getJSONArray("reviewedIds").length()).map { o.getJSONArray("reviewedIds").getString(it) },o.getString("status"),o.getString("reason"))
  suspend fun execute(command: F05Command): String = execute(command, false)
 
@@ -69,15 +69,105 @@ class F05Repository(private val db: WealthDatabase) {
   dao.request(command.requestId)?.let { if(it.fingerprint != fingerprint) invalid("Request key already used for different content"); return@withTransaction it.result }
   val state = load()
   if(!commitment) validateCommitmentBoundary(command,state)
-  apply(command,state)
+  val accountEditReason = apply(command,state)
   validatePlanningRestore(state,dao.accounts())
   snapshot(state) // Reconstruct all balances before any commit, with checked integer arithmetic.
-  state.appendRow("audit",obj("requestId" to command.requestId,"action" to command.javaClass.simpleName,"subjectId" to command.requestId,"reason" to when(command) { is F05Command.Void -> command.reason; is F05Command.Correct -> command.reason; is F05Command.Refund -> command.reason; is F05Command.ResolveDifference -> command.reason; else -> "" }))
+  val auditReason = when (command) {
+   is F05Command.Void -> command.reason
+   is F05Command.Correct -> command.reason
+   is F05Command.Refund -> command.reason
+   is F05Command.ResolveDifference -> command.reason
+   else -> accountEditReason.orEmpty()
+  }
+  val subjectId = (command as? F05Command.EditAccount)?.accountId ?: command.requestId
+  state.appendRow("audit",obj("requestId" to command.requestId,"action" to command.javaClass.simpleName,"subjectId" to subjectId,"reason" to auditReason))
   dao.saveWorkspace(WorkspaceStateEntity("main",state.toString()))
   dao.insertRequest(WorkspaceRequestEntity(command.requestId,fingerprint,command.requestId))
   command.requestId
  }
- private suspend fun apply(command: F05Command, state: JSONObject) {
+ private suspend fun editAccount(c: F05Command.EditAccount, state: JSONObject): String {
+  val previous = account(c.accountId, state, false)
+  val metadata = meta(state, previous)
+  val previousOpeningDate = metadata.text("openingDate")
+  val productId = metadata.getString("productId")
+  val wasPhysicalCash = previous.kind == "CASH" && productId.startsWith("cash")
+  val isPhysicalCash = c.kind == "PHYSICAL_CASH"
+  val kind = if (isPhysicalCash) "CASH" else c.kind
+  val openingDate = c.openingDate?.let(::date)
+  if (c.name.isBlank() || kind !in setOf("CASH", "LIABILITY")) invalid("Completa el nombre y el tipo de cuenta.")
+  if (c.creditLimitMinor < 0 || kind == "CASH" && c.creditLimitMinor != 0L) invalid("El límite debe ser cero o positivo y corresponde a una tarjeta de crédito.")
+  if (c.expectedCurrency.name != previous.currency) invalid("La moneda de la cuenta cambió. Vuelve a abrir el formulario.")
+  val currencyChanged = previous.currency != c.currency.name
+  val physicalCashChanged = wasPhysicalCash != isPhysicalCash
+  val identityChanged = currencyChanged || previous.kind != kind || physicalCashChanged
+  val operations = state.list("operations").filter { row ->
+   listOf("accountId", "destinationId", "fundingAccountId").any { row.text(it) == previous.id }
+  }
+  fun accountRows(table: String) = state.list(table).filter { it.text("accountId") == previous.id }
+  val accountPostings = if (identityChanged || c.openingDate != previousOpeningDate) {
+   dao.postings().filter { it.accountId == previous.id }
+  } else emptyList()
+  if (identityChanged) {
+   if (accountPostings.isNotEmpty() || operations.isNotEmpty()) invalid("Esta cuenta tiene movimientos que dependen de su moneda o tipo original.")
+   if (listOf("holds", "reserves", "reconciliations", "imports").any { accountRows(it).isNotEmpty() } ||
+    dao.creditAssociations().any { it.accountId == previous.id }) {
+    invalid("Esta cuenta tiene autorizaciones, reservas, conciliaciones, importaciones o asociaciones de crédito que dependen de su moneda o tipo original.")
+   }
+   if (referencesAccount(state.optJSONObject("f06"), previous.id) ||
+    referencesAccount(state.optJSONObject("f07"), previous.id)) {
+    invalid("Esta cuenta está vinculada a un plan o compromiso que depende de su moneda o tipo original.")
+   }
+   val productAccounts = dao.accounts().filter { it.id != previous.id && meta(state, it).getString("productId") == productId }
+   if (productAccounts.any { physicalCashChanged || it.kind != kind || it.currency == c.currency.name }) {
+    invalid("El producto requiere cuentas del mismo tipo y una sola cuenta por moneda.")
+   }
+  }
+  if (c.openingDate != previousOpeningDate) {
+   if (openingDate == null) invalid("Completa la fecha de apertura.")
+   val postingIds = accountPostings.mapTo(mutableSetOf()) { it.transactionId }
+   val transactions = if (postingIds.isEmpty()) emptyList() else dao.transactions().filter { it.id in postingIds }
+   val historyDates = operations.flatMap { listOfNotNull(it.text("date"), it.text("bookedDate")) } +
+    accountRows("holds").map { it.getString("date") } +
+    accountRows("reconciliations").map { it.getString("cutDate") } +
+    accountRows("imports").mapNotNull { it.text("openingDate") } +
+    transactions.flatMap { listOf(it.businessDate, BusinessTime.date(Instant.parse(it.occurredAt)).toString()) }
+   if (historyDates.any { date(it) < openingDate }) invalid("La fecha de apertura debe ser igual o anterior al registro más antiguo de la cuenta.")
+  }
+  val updatedOpening = if (currencyChanged) {
+   if (previous.openingMinor != c.expectedBalanceMinor) invalid("El saldo cambió. Vuelve a abrir el formulario para revisar la conversión.")
+   val rate = c.conversionRate?.toBigDecimalOrNull()?.takeIf { it.signum() > 0 }
+    ?: invalid("Ingresa un tipo de cambio manual positivo.")
+   Money(previous.openingMinor, c.expectedCurrency).convert(c.currency, rate).minor
+  } else {
+   if (c.conversionRate != null) invalid("El tipo de cambio se aplica solo al cambiar de moneda.")
+   previous.openingMinor
+  }
+  val updatedProduct = when {
+   !physicalCashChanged -> productId
+   isPhysicalCash -> "cash-${c.requestId}"
+   else -> "product-${c.requestId}"
+  }
+  dao.updateAccount(previous.copy(name = c.name.trim(), currency = c.currency.name, kind = kind,
+   openingMinor = updatedOpening, creditLimitMinor = c.creditLimitMinor))
+  if (state.find("accounts", previous.id) == null) state.appendRow("accounts", metadata)
+  metadata.put("openingDate", c.openingDate ?: JSONObject.NULL).put("productId", updatedProduct)
+  return obj("previousName" to previous.name,"name" to c.name.trim(),
+   "previousKind" to (if (wasPhysicalCash) "PHYSICAL_CASH" else previous.kind),"kind" to c.kind,
+   "previousProductId" to productId,"productId" to updatedProduct,
+   "previousCurrency" to previous.currency,"currency" to c.currency.name,"manualRate" to c.conversionRate,
+   "previousOpeningMinor" to previous.openingMinor,"openingMinor" to updatedOpening,
+   "previousOpeningDate" to previousOpeningDate,"openingDate" to c.openingDate,
+   "previousCreditLimitMinor" to previous.creditLimitMinor,"creditLimitMinor" to c.creditLimitMinor).toString()
+ }
+ private fun referencesAccount(node: Any?, id: String): Boolean = when (node) {
+  is JSONObject -> node.keys().asSequence().any { key ->
+   val value = node.get(key)
+   (key.endsWith("AccountId", ignoreCase = true) && value == id) || referencesAccount(value, id)
+  }
+  is JSONArray -> (0 until node.length()).any { referencesAccount(node.get(it), id) }
+  else -> false
+ }
+ private suspend fun apply(command: F05Command, state: JSONObject): String? {
   when(val c = command) {
    is F05Command.CreateAccount -> {
     date(c.openingDate)
@@ -90,6 +180,7 @@ class F05Repository(private val db: WealthDatabase) {
     val a=account(c.accountId,state,false); if(c.name.isBlank()) invalid("Account name is required")
     dao.renameAccount(a.id,c.name)
    }
+   is F05Command.EditAccount -> return editAccount(c,state)
    is F05Command.ArchiveAccount -> {
     val a=account(c.accountId,state,false); val m=meta(state,a)
     if(state.find("accounts",a.id)==null) state.appendRow("accounts",m)
@@ -134,6 +225,7 @@ class F05Repository(private val db: WealthDatabase) {
    is F05Command.ResolveDifference -> resolve(c,state)
    is F05Command.ImportBatch -> import(c,state)
   }
+  return null
  }
  private fun validateCommitmentBoundary(command: F05Command, state: JSONObject) {
   val purposes=when(command) {
@@ -188,9 +280,13 @@ class F05Repository(private val db: WealthDatabase) {
   dao.insertTransaction(TransactionEntity(id,date(day).atTime(12,0).atZone(BusinessTime.zone).toInstant().toString(),bookedDate,type,true,null,expense))
   dao.insertPostings(legs.mapIndexed { i,p -> PostingEntity("$id:$i",id,p.first.id,p.second,p.first.currency) })
  }
+ private suspend fun recordWithoutPosting(id: String, day: String, type: String, expense: Long, bookedDate: String) {
+  dao.insertTransaction(TransactionEntity(id,date(day).atTime(12,0).atZone(BusinessTime.zone).toInstant().toString(),
+   bookedDate,type,true,null,expense))
+ }
  private fun op(id:String,day:String,type:String,a:String,minor:Long,merchant:String="",category:String="",notes:String="",original:String?=null,splits:List<ExpenseSplit> = emptyList(),expense:Long=0,destination:String?=null,destinationMinor:Long?=null,fee:Long=0,rate:String?=null,rateSource:String?=null,bookedDate:String=day,rateDate:String?=null) = obj("id" to id,"date" to day,"type" to type,"accountId" to a,"amountMinor" to minor,"merchant" to merchant,"category" to category,"notes" to notes,"originalId" to original,"splits" to JSONArray(splits.map { obj("category" to it.category,"minor" to it.minor,"purposeId" to it.purposeId) }),"expenseMinor" to expense,"destinationId" to destination,"destinationMinor" to destinationMinor,"voided" to false,"refundedMinor" to 0,"feeMinor" to fee,"rate" to rate,"rateSource" to rateSource,"bookedDate" to bookedDate,"rateDate" to (rateDate ?: day))
  private suspend fun record(c:F05Command.Record,state:JSONObject,original:String?=null) {
-  val a=account(c.accountId,state); positive(c.amountMinor); val d=date(c.date); val booked=c.bookedDate ?: c.date; date(booked)
+  val a=account(c.accountId,state); if (!c.previouslyDeducted) positive(c.amountMinor) else if (c.amountMinor < 0 || c.type == "INCOME") invalid("Invalid already deducted expense"); val d=date(c.date); val booked=c.bookedDate ?: c.date; date(booked)
   meta(state,a).text("openingDate")?.let { if(d < date(it) || date(booked)<date(it)) invalid("Operation predates account opening") }
   if(c.merchant.isBlank() || c.category.isBlank()) invalid("Merchant/origin and category are required")
   if(c.type !in setOf("INCOME","EXPENSE","CREDIT_PURCHASE")) invalid("Unsupported entry type")
@@ -205,14 +301,17 @@ class F05Repository(private val db: WealthDatabase) {
    } else if(c.fundingPurposeId!=null) invalid("Funding purpose requires an explicit deposit account")
   } else if(c.fundingAccountId!=null || c.fundingPurposeId!=null) invalid("Funding reference is only valid for a credit purchase")
   val expense=if(c.type=="INCOME") 0L else c.amountMinor
-  post(c.requestId,c.date,c.type,listOf(a to if(c.type=="INCOME") c.amountMinor else -c.amountMinor),expense,booked)
+  if (c.previouslyDeducted) {
+   if (c.splits.any { it.purposeId != null } || c.fundingAccountId != null) invalid("Un gasto ya descontado no consume reservas")
+   recordWithoutPosting(c.requestId,c.date,c.type,expense,booked)
+  } else post(c.requestId,c.date,c.type,listOf(a to if(c.type=="INCOME") c.amountMinor else -c.amountMinor),expense,booked)
   val effects=JSONArray()
   c.splits.filter { it.purposeId!=null }.forEach {
    val before=reserve(state,a.id,it.purposeId!!)?.getLong("minor") ?: invalid("Unknown purpose")
    spendReserve(state,a.id,it.purposeId!!,if(c.type=="INCOME") -it.minor else it.minor)
    effects.put(obj("accountId" to a.id,"purposeId" to it.purposeId,"minor" to sub(before,reserve(state,a.id,it.purposeId!!)!!.getLong("minor"))))
   }
-  state.appendRow("operations",op(c.requestId,c.date,c.type,a.id,c.amountMinor,c.merchant,c.category,c.notes,original,c.splits,expense,bookedDate=booked).put("reserveEffects",effects).put("fundingAccountId",c.fundingAccountId ?: JSONObject.NULL).put("fundingPurposeId",c.fundingPurposeId ?: JSONObject.NULL).put("settledMinor",0))
+  state.appendRow("operations",op(c.requestId,c.date,c.type,a.id,c.amountMinor,c.merchant,c.category,c.notes,original,c.splits,expense,bookedDate=booked).put("reserveEffects",effects).put("fundingAccountId",c.fundingAccountId ?: JSONObject.NULL).put("fundingPurposeId",c.fundingPurposeId ?: JSONObject.NULL).put("settledMinor",0).put("previouslyDeducted",c.previouslyDeducted))
   invalidateReconciliations(state,c.requestId)
  }
  private suspend fun transfer(c:F05Command.Transfer,state:JSONObject) {
@@ -248,7 +347,7 @@ class F05Repository(private val db: WealthDatabase) {
      val allocated=state.list("operations").filter { !it.getBoolean("voided") }.flatMap { o -> o.optJSONArray("creditAllocations")?.let { ar -> (0 until ar.length()).map { ar.getJSONObject(it) } } ?: emptyList() }.filter { it.getString("purchaseId")==e.purchaseId }.fold(BigInteger.ZERO) { n,item -> n.add(BigInteger.valueOf(item.getLong("minor"))) }
      exact(BigInteger.valueOf(b.openingMinor).negate().subtract(allocated))
     } else {
-     if(purchase!!.getString("type")!="CREDIT_PURCHASE" || purchase.getString("accountId")!=b.id || purchase.getBoolean("voided")) invalid("Payment allocation must target an active purchase on this card ledger")
+     if(purchase!!.getString("type")!="CREDIT_PURCHASE" || purchase.getString("accountId")!=b.id || purchase.getBoolean("voided") || purchase.optBoolean("previouslyDeducted")) invalid("Payment allocation must target an active purchase on this card ledger")
      sub(sub(purchase.getLong("amountMinor"),purchase.getLong("refundedMinor")),purchase.optLong("settledMinor"))
     }
     if(e.minor>outstanding) invalid("Allocation exceeds outstanding principal")
@@ -315,7 +414,9 @@ class F05Repository(private val db: WealthDatabase) {
      !(allowDebt && o.getString("type")=="DEBT_PAYMENT")) invalid("This operation cannot be reversed")
   val p=dao.postings().filter { it.transactionId==id || it.transactionId=="$id:fee" }
   val accounts=dao.accounts().associateBy { it.id }
-  post(key,o.getString("date"),"REVERSAL",p.map { accounts.getValue(it.accountId) to sub(0,it.minor) },-add(o.getLong("expenseMinor"),o.optLong("feeMinor")),o.optString("bookedDate",o.getString("date")))
+  if (o.optBoolean("previouslyDeducted"))
+   recordWithoutPosting(key,o.getString("date"),"REVERSAL",-o.getLong("expenseMinor"),o.optString("bookedDate",o.getString("date")))
+  else post(key,o.getString("date"),"REVERSAL",p.map { accounts.getValue(it.accountId) to sub(0,it.minor) },-add(o.getLong("expenseMinor"),o.optLong("feeMinor")),o.optString("bookedDate",o.getString("date")))
   val effects=o.optJSONArray("reserveEffects") ?: JSONArray()
   (0 until effects.length()).forEach { i -> val e=effects.getJSONObject(i)
    val r=reserve(state,e.getString("accountId"),e.getString("purposeId")) ?: invalid("Missing reserve history")
@@ -330,14 +431,14 @@ class F05Repository(private val db: WealthDatabase) {
   }
   o.put("voided",true)
   state.find("operations","$id:fee")?.put("voided",true)
-  state.appendRow("operations",op(key,o.getString("date"),"REVERSAL",o.getString("accountId"),o.getLong("amountMinor"),notes=reason,original=id,expense=-add(o.getLong("expenseMinor"),o.optLong("feeMinor")),destination=o.text("destinationId"),destinationMinor=o.longOrNull("destinationMinor"),bookedDate=o.optString("bookedDate",o.getString("date"))))
+  state.appendRow("operations",op(key,o.getString("date"),"REVERSAL",o.getString("accountId"),o.getLong("amountMinor"),notes=reason,original=id,expense=-add(o.getLong("expenseMinor"),o.optLong("feeMinor")),destination=o.text("destinationId"),destinationMinor=o.longOrNull("destinationMinor"),bookedDate=o.optString("bookedDate",o.getString("date"))).put("previouslyDeducted",o.optBoolean("previouslyDeducted")))
   invalidateReconciliations(state,id)
  }
  private suspend fun refund(c:F05Command.Refund,state:JSONObject) {
   positive(c.amountMinor); date(c.date); val booked=c.bookedDate ?: c.date; date(booked); if(c.reason.isBlank()) invalid("Refund reason is required")
   val o=state.find("operations",c.operationId) ?: invalid("Unknown purchase")
   if(o.has("feeParent")) invalid("Fee refund requires a separate audited bank correction")
-  if(o.getString("type") !in setOf("EXPENSE","CREDIT_PURCHASE") || o.getBoolean("voided")) invalid("Refund requires an active purchase")
+  if(o.getString("type") !in setOf("EXPENSE","CREDIT_PURCHASE") || o.getBoolean("voided") || o.optBoolean("previouslyDeducted")) invalid("Refund requires an active purchase posted to the account")
   if(date(c.date)<date(o.getString("date"))) invalid("Refund cannot predate purchase")
   val refunded=add(o.getLong("refundedMinor"),c.amountMinor)
   if(refunded>o.getLong("amountMinor")) invalid("Refunds cannot exceed original purchase")
@@ -456,7 +557,7 @@ class F05Repository(private val db: WealthDatabase) {
     if(splits.any { it.integer("minor")<=0 || it.getString("category").isBlank() }) fail()
     if(splits.isNotEmpty() && splits.fold(BigInteger.ZERO) { n,s -> n.add(BigInteger.valueOf(s.integer("minor"))) }!=BigInteger.valueOf(amount)) fail()
     val legs=postingsByTransaction[id].orEmpty()
-    if(legs.isEmpty()) fail()
+    if (o.optBoolean("previouslyDeducted") != legs.isEmpty()) fail()
     if(t.type in setOf("FX_TRANSFER","FX_CREDIT_PAYMENT")) {
      if(legs.size!=2 || legs.map { it.currency }.distinct().size!=2 || legs.none { it.minor<0 && it.accountId==a.id } || o.getString("rateSource").isBlank() || BigDecimal(o.getString("rate")).signum()<=0) fail()
     }
@@ -469,6 +570,13 @@ class F05Repository(private val db: WealthDatabase) {
     fun aggregate(ps:List<PostingEntity>)=ps.groupBy { it.accountId }.mapValues { (_,v) -> v.fold(BigInteger.ZERO) { n,p -> n.add(BigInteger.valueOf(p.minor)) } }.filterValues { it!=BigInteger.ZERO }
     when(type) {
      "INCOME","EXPENSE","CREDIT_PURCHASE" -> {
+      if (o.optBoolean("previouslyDeducted")) {
+       if (type == "INCOME" || amount < 0 || o.integer("expenseMinor") != amount ||
+        o.integer("refundedMinor") != 0L || o.optLong("settledMinor") != 0L ||
+        o.getJSONArray("splits").rows().any { !it.isNull("purposeId") } ||
+        !o.isNull("fundingAccountId") || !o.isNull("fundingPurposeId")) fail()
+       return@forEach
+      }
       val posting=legs.singleOrNull() ?: fail()
       val income=type=="INCOME"
       if(amount<=0 || posting.accountId!=o.getString("accountId") ||
@@ -488,7 +596,7 @@ class F05Repository(private val db: WealthDatabase) {
         val key=e.getString("purchaseId"); val p=byId[key]
         if(key=="opening:${destination.id}") {
          if(destination.openingMinor>=0) fail()
-        } else if(p==null || p.getString("type")!="CREDIT_PURCHASE" || p.getString("accountId")!=destination.id) fail()
+        } else if(p==null || p.getString("type")!="CREDIT_PURCHASE" || p.getString("accountId")!=destination.id || p.optBoolean("previouslyDeducted")) fail()
         if(e.integer("minor")<=0 || e.integer("sourceMinor")<=0) fail()
         if(!o.getBoolean("voided")) settled[key]=(settled[key] ?: BigInteger.ZERO).add(BigInteger.valueOf(e.integer("minor")))
        }
@@ -496,13 +604,13 @@ class F05Repository(private val db: WealthDatabase) {
      }
      "REFUND" -> {
       val original=byId[o.getString("originalId")] ?: fail()
-      if(original.getString("type") !in setOf("EXPENSE","CREDIT_PURCHASE") || legs.size!=1 || amount<=0 || legs.single().accountId!=original.getString("accountId") || legs.single().minor!=amount || o.integer("expenseMinor")!=-amount) fail()
+      if(original.getString("type") !in setOf("EXPENSE","CREDIT_PURCHASE") || original.optBoolean("previouslyDeducted") || legs.size!=1 || amount<=0 || legs.single().accountId!=original.getString("accountId") || legs.single().minor!=amount || o.integer("expenseMinor")!=-amount) fail()
      }
      "REVERSAL" -> {
       val original=byId[o.getString("originalId")] ?: fail()
       val originalLegs=postingsByTransaction[original.getString("id")].orEmpty() +
           postingsByTransaction[original.getString("id")+":fee"].orEmpty()
-      if(!original.getBoolean("voided") || amount!=original.integer("amountMinor") || aggregate(legs)!=aggregate(originalLegs).mapValues { it.value.negate() }) fail()
+      if(!original.getBoolean("voided") || o.optBoolean("previouslyDeducted") != original.optBoolean("previouslyDeducted") || o.integer("expenseMinor") != -Math.addExact(original.integer("expenseMinor"), original.optLong("feeMinor")) || amount!=original.integer("amountMinor") || aggregate(legs)!=aggregate(originalLegs).mapValues { it.value.negate() }) fail()
      }
      "ADJUSTMENT" -> {
       val rec=reconciliations[o.getString("originalId")] ?: fail()
@@ -562,5 +670,5 @@ internal fun canonicalLedgerCommand(value: Any?): Any = when(value) {
   is String, is Number, is Boolean -> value
   is Enum<*> -> value.name
   is Iterable<*> -> JSONArray(value.map { canonicalLedgerCommand(it) })
-  else -> JSONObject().apply { put("_type",value.javaClass.simpleName); value.javaClass.declaredFields.filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }.sortedBy { it.name }.forEach { field -> field.isAccessible=true; put(field.name,canonicalLedgerCommand(field.get(value))) } }
+  else -> JSONObject().apply { put("_type",value.javaClass.simpleName); value.javaClass.declaredFields.filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }.sortedBy { it.name }.forEach { field -> field.isAccessible=true; if(field.name != "previouslyDeducted" || field.get(value) == true) put(field.name,canonicalLedgerCommand(field.get(value))) } }
  }

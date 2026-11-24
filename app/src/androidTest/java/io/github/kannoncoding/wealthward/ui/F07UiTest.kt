@@ -79,11 +79,11 @@ class F07UiTest {
  @Test fun t08PayInstallmentWithPrincipalAndInterestOnce() {
   open("f07debt")
   text("Nombre de la deuda", "Crédito de prueba")
-  text("Principal de apertura", "300000")
+  text("Saldo total pendiente de la deuda", "300000")
   text("Fecha de apertura · AAAA-MM-DD", "2027-01-01")
   text("Primera cuota · AAAA-MM-DD", "2027-02-15")
-  text("Importe de la cuota", "50000")
-  text("Plazo restante en meses", "6")
+  text("Monto por cuota", "50000")
+  text("Cuotas restantes", "6")
   save()
   val debt = runBlocking { repo.snapshot(month) }.debts.single().debt
   open("f07installment", "$month/${debt.id}")
@@ -102,6 +102,24 @@ class F07UiTest {
   val posted = runBlocking { ledger.snapshot() }
   assertEquals(25000000L, posted.accounts.single { it.id == "a" }.balanceMinor)
   assertEquals(1000000L, posted.operations.sumOf { it.expenseMinor })
+ }
+
+ @Test fun quarterlyDebtUsesOnlyScheduledDatesThroughEndDate() {
+  open("f07debt")
+  text("Nombre de la deuda", "Préstamo trimestral")
+  text("Saldo total pendiente de la deuda", "300000")
+  text("Fecha de apertura · AAAA-MM-DD", "2027-01-01")
+  text("Primera cuota · AAAA-MM-DD", "2027-01-31")
+  click("Mensual")
+  click("Trimestral")
+  text("Monto por cuota", "50000")
+  click("Cantidad de cuotas")
+  click("Fecha de fin")
+  text("Fecha de fin · AAAA-MM-DD", "2027-07-30")
+  save()
+  val result = runBlocking { repo.snapshot("2027-08") }
+  assertEquals(2, result.debts.single().debt.remainingMonths)
+  assertEquals(listOf("2027-01-31", "2027-04-30"), result.installments.map { it.dueDate })
  }
 
  @Test fun t09FundGoalWithoutChangingOwnMoneyAndReleaseFromOneAccount() {

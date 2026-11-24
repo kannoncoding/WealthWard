@@ -49,7 +49,7 @@ class F08UiTest {
 
  @Test fun positiveForecastShowsEarlierAccountDeficitAndSource() {
   show()
-  ui.onNodeWithText("Progreso Pronóstico 110.00 %", substring = true).performScrollTo().assertIsDisplayed()
+  ui.onNodeWithText("Avance hacia la meta 110.00 %", substring = true).performScrollTo().assertIsDisplayed()
   click("Calendario de caja")
   ui.onNodeWithText("Primer déficit detectado 2026-10-04 · CRC -100.00", substring = true).performScrollTo().assertIsDisplayed()
   click("Ver fechas · Facturas")
@@ -89,6 +89,26 @@ class F08UiTest {
   ui.runOnIdle {
    assertEquals(mapOf(Currency.CRC to ProjectionLimits(7_000, 45_000)), applied)
   }
+ }
+
+ @Test fun summaryShowsCurrentMoneyWithoutIncludingFutureIncome() {
+  val ledger = F05Snapshot(accounts = listOf(
+   AccountDetail("bills","bills","Facturas",crc,"CASH",null,false,10000,0,10000,0,emptyList(),null),
+   AccountDetail("other","other","Cuenta de apoyo",crc,"CASH",null,false,70000,0,70000,0,emptyList(),null)))
+  ui.setContent {
+   MaterialTheme {
+    Column(Modifier.verticalScroll(rememberScrollState())) {
+     MonthlySummary("2026-10",due,ledger,F06Snapshot(occurrences=listOf(occurrence)),F07Snapshot(),project(input)) { _, _ -> }
+    }
+   }
+  }
+  ui.onNodeWithText("Saldo disponible").assertIsDisplayed()
+  ui.onNodeWithText("CRC 600.00").assertIsDisplayed()
+  ui.onAllNodesWithText("Facturas")[0].assertIsDisplayed()
+  ui.onNodeWithText("CRC 100.00").assertIsDisplayed()
+  ui.onNodeWithText("Restante por pagar").performScrollTo().assertIsDisplayed()
+  assertEquals(3, ui.onAllNodesWithText("CRC 200.00").fetchSemanticsNodes().size)
+  ui.onNodeWithText("Pronóstico de cierre").assertDoesNotExist()
  }
 
  private fun show(updateSettings: (ProjectionSettings) -> Unit = {}) {

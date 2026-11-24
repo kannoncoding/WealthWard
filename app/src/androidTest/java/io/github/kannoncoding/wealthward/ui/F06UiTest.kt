@@ -93,6 +93,24 @@ class F06UiTest {
   assertEquals(0L,snapshot().occurrences.single().pendingMinor)
   assertEquals(2,runBlocking { ledger.snapshot() }.operations.size)
  }
+ @Test fun alreadyDeductedClosesBillWithoutPostingAnotherDebit() {
+  seedTemplate(); refresh()
+  val item = snapshot().occurrences.single()
+  open("f06pay",item.id)
+  text("Importe real recibido o pagado","0")
+  click("Confirmo que este movimiento realmente ocurrió")
+  click("Guardar")
+  assertEquals(item.pendingMinor,snapshot().occurrences.single().pendingMinor)
+  click("Este pago ya se había descontado de la cuenta seleccionada")
+  ui.onNodeWithText("Importe a descontar: 0.", substring = true).assertExists()
+  click("Guardar"); saved()
+  val paid = snapshot().occurrences.single()
+  assertEquals(0L,paid.pendingMinor)
+  assertTrue(paid.previouslyDeducted)
+  assertEquals(0L,paid.cashPaidMinor)
+  assertTrue(runBlocking { ledger.snapshot() }.operations.isEmpty())
+  assertEquals(50000000L,runBlocking { ledger.snapshot() }.accounts.single().balanceMinor)
+ }
  @Test fun t16FebruaryClampsAndRepeatedOpenRetainsHistoryAfterRevision() {
   open("f06template","FIXED")
   text("Nombre de la obligación","Cuota de prueba"); text("Importe propio estimado","1000"); text("Día nominal (1–31)","31"); text("Motivo de esta revisión","Alta de prueba"); click("Guardar"); saved()
@@ -132,7 +150,6 @@ class F06UiTest {
  }
  @Test fun budgetRevisionAndCopyKeepInitialPlanAndNeverCopyMoney() {
   open("f06budget")
-  text("Meta T (objetivo, no gasto)","250")
   text("Motivo de la versión","Presupuesto inicial")
   text("Categoría 1","Alimentos"); text("Presupuesto 1","1000")
   click("Guardar presupuesto"); saved()
@@ -140,6 +157,8 @@ class F06UiTest {
   assertEquals(2,snapshot().plans.size)
   assertEquals(100000L,snapshot().plans.first { it.version==1 }.rows.single().minor)
   assertEquals(120000L,snapshot().plans.first { it.version==2 }.rows.single().minor)
+  open("f06target"); text("Monto de la meta","250"); click("Guardar"); saved()
+  assertEquals(120000L,snapshot().plans.maxBy { it.version }.rows.single().minor)
   open("f06copy"); text("Periodo a preparar","2027-03"); click("Guardar"); saved()
   val copied=snapshot().plans.single { it.month=="2027-03" }
   assertEquals(25000L,copied.targetMinor)

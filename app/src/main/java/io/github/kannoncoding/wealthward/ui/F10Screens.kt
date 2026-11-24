@@ -43,19 +43,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private const val BACKUP_WARNING =
-    "El archivo contiene tus datos financieros y se guarda sin cifrar. Guárdalo en un lugar privado."
-private const val REPLACE_WARNING =
-    "Al restaurar, los datos financieros actuales se reemplazarán por los del respaldo."
+private val BACKUP_WARNING get() =
+    localized("El archivo contiene tus datos financieros y se guarda sin cifrar. Guárdalo en un lugar privado.")
+private val REPLACE_WARNING get() =
+    localized("Al restaurar, los datos financieros actuales se reemplazarán por los del respaldo.")
 private const val BACKUP_CHARACTER_LIMIT = 16 * 1024 * 1024
 private class BackupSizeException : IOException()
 
 @Composable
 internal fun F10Configuration(open: (String) -> Unit) {
-    Text("Respaldo y exportación", style = MaterialTheme.typography.titleMedium)
-    Action("Crear respaldo") { open("f10Backup") }
-    Action("Restaurar desde respaldo") { open("f10Restore") }
-    Action("Exportar resumen") { open("f10Summary") }
+    Text(localized("Respaldo y exportación"), style = MaterialTheme.typography.titleMedium)
+    Action(localized("Crear respaldo")) { open("f10Backup") }
+    Action(localized("Restaurar desde respaldo")) { open("f10Restore") }
+    Action(localized("Exportar resumen")) { open("f10Summary") }
 }
 
 @Composable
@@ -87,9 +87,9 @@ internal fun F10Screen(
             } catch (error: CancellationException) {
                 throw error
             } catch (error: DomainFailure.UnsupportedVersion) {
-                showError("La versión del respaldo no es compatible. Elige un archivo de respaldo de una versión compatible de WealthWard.")
+                showError(localized("La versión del respaldo no es compatible. Elige un archivo de respaldo de una versión compatible de WealthWard."))
             } catch (_: BackupSizeException) {
-                showError("El respaldo supera el tamaño admitido por esta versión de WealthWard.")
+                showError(localized("El respaldo supera el tamaño admitido por esta versión de WealthWard."))
             } catch (_: Exception) {
                 showError(errorMessage)
             } finally {
@@ -99,7 +99,7 @@ internal fun F10Screen(
     }
 
     val create = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-        if (uri != null) perform("No se pudo guardar el respaldo. Elige otra ubicación e inténtalo de nuevo.") {
+        if (uri != null) perform(localized("No se pudo guardar el respaldo. Elige otra ubicación e inténtalo de nuevo.")) {
             withContext(Dispatchers.IO) {
                 val document = files.backup()
                 if (document.length > BACKUP_CHARACTER_LIMIT) throw BackupSizeException()
@@ -107,13 +107,13 @@ internal fun F10Screen(
                     output.writer(Charsets.UTF_8).apply { write(document); flush() }
                 }
             }
-            showSuccess("Respaldo guardado.")
+            showSuccess(localized("Respaldo guardado."))
         }
     }
     val read = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             inspected = null
-            perform("El archivo no se pudo leer o sus datos son inválidos. Elige otro respaldo. Tus datos siguen intactos.") {
+            perform(localized("El archivo no se pudo leer o sus datos son inválidos. Elige otro respaldo. Tus datos siguen intactos.")) {
                 inspected = withContext(Dispatchers.IO) {
                     val input = resolver.openInputStream(uri) ?: throw IOException("Document unavailable")
                     val document = InputStreamReader(input, Charsets.UTF_8.newDecoder()).use { it.readBackup() }
@@ -129,16 +129,16 @@ internal fun F10Screen(
         pendingExport = null
         if (uri == null) return
         if (exactReport == null) {
-            showError("Se cerró la vista previa. Revisa el resumen y vuelve a guardarlo.")
+            showError(localized("Se cerró la vista previa. Revisa el resumen y vuelve a guardarlo."))
             return
         }
-        perform("No se pudo guardar el resumen. Elige otra ubicación e inténtalo de nuevo.") {
+        perform(localized("No se pudo guardar el resumen. Elige otra ubicación e inténtalo de nuevo.")) {
             withContext(Dispatchers.IO) {
                 resolver.writeDocument(uri) { output ->
                     if (pdf) exactReport.writePdf(output) else exactReport.writeCsv(output)
                 }
             }
-            showSuccess(if (pdf) "Resumen PDF guardado." else "Resumen CSV guardado.")
+            showSuccess(if (pdf) localized("Resumen PDF guardado.") else localized("Resumen CSV guardado."))
         }
     }
 
@@ -148,7 +148,7 @@ internal fun F10Screen(
     val csvPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) {
         saveSummary(it, pdf = false)
     }
-    fun loadSummary() = perform("No se pudo generar el resumen. Inténtalo de nuevo.") {
+    fun loadSummary() = perform(localized("No se pudo generar el resumen. Inténtalo de nuevo.")) {
         report = files.summary()
         selection = report?.rows.orEmpty().mapTo(mutableSetOf()) { it.id }
     }
@@ -160,45 +160,45 @@ internal fun F10Screen(
             action()
         } catch (_: Exception) {
             pendingExport = null
-            showError("No se pudo abrir el selector de archivos de Android.")
+            showError(localized("No se pudo abrir el selector de archivos de Android."))
         }
     }
 
     when (screen) {
         "f10Backup" -> {
             Text(BACKUP_WARNING)
-            Action("Elegir dónde guardar", !busy) {
+            Action(localized("Elegir dónde guardar"), !busy) {
                 launchPicker { create.launch("wealthward-respaldo-${today()}.json") }
             }
         }
         "f10Restore" -> {
-            Text("Elige un respaldo de WealthWard para revisar sus datos antes de restaurar.")
-            Action("Elegir archivo de respaldo", !busy) {
+            Text(localized("Elige un respaldo de WealthWard para revisar sus datos antes de restaurar."))
+            Action(localized("Elegir archivo de respaldo"), !busy) {
                 launchPicker { read.launch(arrayOf("*/*")) }
             }
             inspected?.let { (name, candidate) ->
                 val createdDay = candidate.createdAt.atZone(BusinessTime.zone).toLocalDate()
-                InfoCard("Respaldo revisado", "$name\nCreado el $createdDay · Versión $BACKUP_VERSION\n" +
-                    "Cuentas y deudas: ${candidate.accountCount}\nMovimientos: ${candidate.movementCount}\n" +
-                    "Planes: ${candidate.planCount}", 0)
+                InfoCard(localized("Respaldo revisado"), localized("{0}\nCreado el {1} · Versión {2}\n", name, createdDay, BACKUP_VERSION) +
+                    localized("Cuentas y deudas: {0}\nMovimientos: {1}\n", candidate.accountCount, candidate.movementCount) +
+                    localized("Planes: {0}", candidate.planCount), 0)
                 SummaryTotals(candidate.summary)
                 Text(REPLACE_WARNING)
-                Action("Continuar para restaurar", !busy) { confirm = true }
+                Action(localized("Continuar para restaurar"), !busy) { confirm = true }
                 if (confirm) {
                     AlertDialog(
                         onDismissRequest = { confirm = false },
-                        title = { Text("¿Reemplazar los datos actuales?") },
+                        title = { Text(localized("¿Reemplazar los datos actuales?")) },
                         text = { Text(REPLACE_WARNING) },
-                        dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancelar") } },
+                        dismissButton = { TextButton(onClick = { confirm = false }) { Text(localized("Cancelar")) } },
                         confirmButton = {
                             TextButton(onClick = {
                                 confirm = false
-                                perform("No se pudo restaurar el respaldo. Tus datos siguen intactos.") {
+                                perform(localized("No se pudo restaurar el respaldo. Tus datos siguen intactos.")) {
                                     files.restore(candidate)
                                     inspected = null
-                                    showSuccess("Respaldo restaurado. Los saldos y la configuración se actualizaron.")
+                                    showSuccess(localized("Respaldo restaurado. Los saldos y la configuración se actualizaron."))
                                 }
-                            }) { Text("Reemplazar y restaurar") }
+                            }) { Text(localized("Reemplazar y restaurar")) }
                         },
                     )
                 }
@@ -207,10 +207,10 @@ internal fun F10Screen(
         "f10Summary" -> {
             LaunchedEffect(files) { loadSummary() }
             val current = report
-            if (current == null && !busy) Action("Generar vista previa") { loadSummary() }
+            if (current == null && !busy) Action(localized("Generar vista previa")) { loadSummary() }
             if (current != null) {
                 val selected = current.copy(rows = current.rows.filter { it.id in selection })
-                Text("Elige las cuentas y deudas que incluirás. El archivo contiene datos financieros.")
+                Text(localized("Elige las cuentas y deudas que incluirás. El archivo contiene datos financieros."))
                 current.rows.forEach { row ->
                     val checked = row.id in selection
                     Row(
@@ -222,21 +222,21 @@ internal fun F10Screen(
                     ) {
                         Checkbox(checked, onCheckedChange = null, enabled = !busy,
                             modifier = Modifier.padding(end = 12.dp))
-                        Text("${row.alias} · ${row.currency} · ${row.type.label}" +
-                            if (row.archived) " · Archivada" else "")
+                        Text("${row.alias} · ${row.currency} · ${localized(row.type.label)}" +
+                            if (row.archived) localized(" · Archivada") else "")
                     }
                 }
-                Text("Vista previa del resumen", style = MaterialTheme.typography.titleLarge)
-                Text("Resumen generado el ${selected.date}")
-                if (selected.rows.isEmpty()) Text("Selecciona al menos una cuenta o deuda para guardar el resumen.")
+                Text(localized("Vista previa del resumen"), style = MaterialTheme.typography.titleLarge)
+                Text(localized("Resumen generado el {0}", selected.date))
+                if (selected.rows.isEmpty()) Text(localized("Selecciona al menos una cuenta o deuda para guardar el resumen."))
                 selected.rows.forEach { row ->
                     InfoCard("${row.alias} · ${row.currency}",
-                        row.type.label + (if (row.archived) " · Archivada" else "") + "\n" +
-                            row.amounts.display(row.type), 1)
+                        localized(row.type.label) + (if (row.archived) localized(" · Archivada") else "") + "\n" +
+                            row.amounts.display(row.type) { localized(it) }, 1)
                 }
                 SummaryTotals(selected)
                 listOf("PDF" to pdfPicker, "CSV" to csvPicker).forEach { (format, picker) ->
-                    Action("Guardar $format", !busy && selected.rows.isNotEmpty()) {
+                    Action(localized("Guardar {0}", format), !busy && selected.rows.isNotEmpty()) {
                         launchPicker {
                             pendingExport = selected
                             picker.launch("wealthward-resumen-${selected.date}.${format.lowercase()}")
@@ -252,7 +252,7 @@ internal fun F10Screen(
 private fun SummaryTotals(report: FinancialSummary) {
     Column {
         report.totals().forEach { (currency, amounts) ->
-            InfoCard("Totales $currency", amounts.display(), 2)
+            InfoCard(localized("Totales {0}", currency), amounts.display { localized(it) }, 2)
         }
     }
 }
@@ -277,4 +277,4 @@ private fun ContentResolver.documentName(uri: Uri): String = runCatching {
     query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
         if (it.moveToFirst()) it.getString(0) else null
     }
-}.getOrNull() ?: "Archivo seleccionado"
+}.getOrNull() ?: localized("Archivo seleccionado")

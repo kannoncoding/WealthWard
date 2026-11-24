@@ -95,10 +95,12 @@ class F08Repository(private val db: WealthDatabase) {
             val linked = completed(ids)
             linkedIds.addAll(linked.map { it.id })
             val expected = if (historical) row.getLong("expectedMinor") else row.f07OptionalLong("confirmedMinor") ?: row.getLong("expectedMinor")
-            val covered = linked.fold(0L) { sum, op -> Math.addExact(sum, op.amountMinor - refunds[op.id].orEmpty().sumMinor { it.amountMinor }) }
+            val priorAmount = previouslyDeductedPayments(row)
+                .filter { LocalDate.parse(it.getString("date")) <= cutoff }.sumMinor { it.getLong("minor") }
+            val covered = linked.fold(priorAmount) { sum, op -> Math.addExact(sum, op.amountMinor - refunds[op.id].orEmpty().sumMinor { it.amountMinor }) }
             groups += BudgetOccurrence(row.getString("id"), row.getString("name"), row.getString("group"),
                 PlanNature.valueOf(row.getString("nature")), Currency.valueOf(row.getString("currency")),
-                LocalDate.parse(row.getString("dueDate")), expected, (expected - covered).coerceAtLeast(0),
+                LocalDate.parse(row.getString("dueDate")), expected, (expected - ownShareOfPayment(covered, expected, paymentTotal(row, occurrenceTemplate(planState, row), historical))).coerceAtLeast(0),
                 row.f07Text("suggestedAccountId"), row.f07Text("purposeId"), linked.map { it.id }, row.getString("financingMonth"))
         }
         commitmentInstallments(atCut, month).forEach { entry ->
@@ -146,13 +148,17 @@ class F08Repository(private val db: WealthDatabase) {
                     issues += "Ingreso vencido sin cobro confirmado: ${item.title}"
                     cashIssues += issues.last()
                 } else events += ProjectionCashEvent(item.id, item.title, item.accountId, item.date, amount, true, links)
-            } else addObligation(item.id, item.title, amount, item.accountId, item.date, item.purposeId, links)
+            } else {
+                // A card can charge the bill, but it cannot fund a cash outflow.
+                val cashAccount = item.accountId?.takeIf { id -> accounts.any { it.id == id && it.kind == "CASH" } }
+                addObligation(item.id, item.title, amount, cashAccount, item.date, item.purposeId, links)
+            }
         }
         val credit = cutCommitments.f07Rows("statements").map { it.creditStatement() }
             .filter { LocalDate.parse(it.cutoffDate) <= cutoff }.groupBy { it.accountId }
         val creditLinks = currentCommitments.f07Rows("statementPayments").groupBy { it.getString("statementId") }
         val coveredPurchases = mutableSetOf<String>()
-        val purchases = activeOps.filter { it.type == "CREDIT_PURCHASE" }.groupBy { it.accountId }
+        val purchases = activeOps.filter { it.type == "CREDIT_PURCHASE" && !it.previouslyDeducted }.groupBy { it.accountId }
         fun creditNet(id: String, original: Long) = (original - allocations[id].orEmpty().sumMinor { it.minor } -
             refunds[id].orEmpty().sumMinor { it.amountMinor }).coerceAtLeast(0)
         credit.forEach { (accountId, statements) ->
@@ -164,7 +170,7 @@ class F08Repository(private val db: WealthDatabase) {
             val statedIds = statement.purchaseIds.toSet()
             val openingId = "opening:$accountId"
             coveredPurchases.addAll(statedIds)
-            val classifiedPrincipal = statedIds.sumMinor { id -> ops[id]?.let { creditNet(id, it.amountMinor) } ?: 0 }
+            val classifiedPrincipal = statedIds.sumMinor { id -> ops[id]?.takeUnless { it.previouslyDeducted }?.let { creditNet(id, it.amountMinor) } ?: 0 }
             val opening = allAccounts.getValue(accountId).openingMinor
             val openingNet = creditNet(openingId, if (opening < 0) Math.negateExact(opening) else 0)
             val residual = (pending - classifiedPrincipal).coerceAtLeast(0)

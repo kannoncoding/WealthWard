@@ -22,6 +22,7 @@ data class Debt(
     val extraPaymentPolicy: ExtraPaymentPolicy = ExtraPaymentPolicy.MANUAL,
     val suggestedAccountId: String? = null,
     val amortization: DebtAmortization = DebtAmortization.MANUAL,
+    val intervalMonths: Int = 1,
 )
 
 data class DebtPayment(

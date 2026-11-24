@@ -17,6 +17,110 @@ class F06PersistenceTest {
  private suspend fun F05Repository.cash(amount:Long=50000000,id:String="cash",currency:Currency=Currency.CRC,kind:String="CASH") { execute(F05Command.CreateAccount("create:$id",id,id,"Account $id",currency,kind,amount,"2026-01-01")) }
  private fun bill(id:String="bill",minor:Long=2500000,month:String="2027-01",frequency:Recurrence=Recurrence.MONTHLY)=RecurringTemplate(id,1,"Service $id","Essentials",PlanNature.FIXED,minor,Currency.CRC,month,frequency,31,suggestedAccountId="cash")
  private suspend fun fails(block:suspend ()->Unit) { try { block(); fail("Expected invalid command") } catch (_:DomainFailure) {} }
+ @Test fun rolloverKeepsOriginalObligationsAndDoesNotPostTheSalary(): Unit = runBlocking {
+  val db = database()
+  try {
+   val repo = FinanceRepository(db)
+   repo.workspace.cash()
+   repo.planning.execute(F06Command.SaveTemplate("netflix", bill(id = "netflix").copy(day = 15, nature = PlanNature.SUBSCRIPTION)))
+   repo.planning.execute(F06Command.SaveSalary("salary", SalaryVersion("salary-version", "2027-01", 200_000, Currency.CRC, "cash")))
+   repo.planning.execute(F06Command.OpenPeriod("open-jan", "2027-01"))
+   val openMarch = F06Command.OpenPeriod("open-mar", "2027-03")
+   repo.planning.execute(openMarch)
+   repo.planning.execute(openMarch)
+   val periods = listOf("2027-01", "2027-02", "2027-03")
+   val month = repo.planning.snapshot("2027-03")
+   assertEquals(periods, month.occurrences.filter { it.templateId == "netflix" }.map { it.nominalMonth }.sorted())
+   assertEquals(periods, month.occurrences.filter { it.templateId == "salary" }.map { it.nominalMonth }.sorted())
+   assertTrue(repo.workspace.snapshot().operations.isEmpty())
+   repo.planning.execute(F06Command.Pay("pay-jan", "netflix:2027-01:0", "cash", 2_500_000, "2027-03-15"))
+   assertEquals(periods.drop(1), repo.planning.snapshot("2027-03").occurrences
+    .filter { it.templateId == "netflix" && it.paymentPendingMinor > 0 }.map { it.nominalMonth }.sorted())
+   assertEquals(1, repo.workspace.snapshot().operations.size)
+  } finally { db.close() }
+ }
+
+ @Test fun multipleReminderLeadsSurviveExportAndRestore(): Unit = runBlocking {
+  val db = database()
+  try {
+   val repo = FinanceRepository(db)
+   assertEquals(listOf(1), repo.planning.snapshot().reminders.leads)
+   val preference = ReminderPreference(true, 7, 9, listOf(1, 0))
+   repo.planning.execute(F06Command.SetReminders("multiple", preference))
+   repo.restoreFixture(repo.exportFixture())
+   assertEquals(preference, repo.planning.snapshot().reminders)
+   fails { repo.planning.execute(F06Command.SetReminders("duplicate", preference.copy(additionalDays = listOf(7)))) }
+  } finally { db.close() }
+ }
+ @Test fun canConfirmAdditionalDeductionAfterConfirmedTotalIncreases(): Unit = runBlocking {
+  val db = database()
+  try {
+   val repo = FinanceRepository(db)
+   repo.workspace.cash()
+   val date = java.time.LocalDate.now(BusinessTime.zone)
+   val month = java.time.YearMonth.from(date).toString()
+   repo.planning.execute(F06Command.SaveTemplate("food", bill(minor = 100, month = month)))
+   repo.planning.execute(F06Command.OpenPeriod("open-food", month))
+   val id = repo.planning.snapshot(month).occurrences.single().id
+   repo.planning.execute(F06Command.ConfirmPreviouslyDeducted("first", id, "cash", date.toString()))
+   repo.planning.execute(F06Command.ConfirmAmount("raise", id, 150))
+   assertEquals(50L, repo.planning.snapshot(month).occurrences.single().paymentPendingMinor)
+   repo.planning.execute(F06Command.ConfirmPreviouslyDeducted("second", id, "cash", date.toString()))
+   assertEquals(0L, repo.planning.snapshot(month).occurrences.single().paymentPendingMinor)
+   assertEquals(150L, repo.planning.snapshot(month).occurrences.single().paidMinor)
+   assertTrue(repo.workspace.snapshot().operations.isEmpty())
+   repo.restoreFixture(repo.exportFixture())
+  } finally { db.close() }
+ }
+ @Test fun sharedRentDebitsFullAmountAndReportsOnlyOwnShare(): Unit = runBlocking {
+  val db = database()
+  try {
+   val repository = FinanceRepository(db)
+   repository.workspace.cash(50_000_000)
+   val month = "2027-01"
+   val template = bill(month = month).copy(
+    name = "Renta", householdTotalMinor = 40_000_000, ownPercent = "50")
+   repository.planning.execute(F06Command.SaveTemplate("shared-rent", template))
+   repository.planning.execute(F06Command.OpenPeriod("open-shared", month))
+   val expected = repository.planning.snapshot(month).occurrences.single()
+   assertEquals(20_000_000L, expected.pendingMinor)
+   assertEquals(40_000_000L, expected.paymentPendingMinor)
+   repository.planning.execute(F06Command.Pay("rent-part", expected.id, "cash", 10_000_000, "$month-31"))
+   val partial = repository.planning.snapshot(month).occurrences.single()
+   assertEquals(30_000_000L, partial.paymentPendingMinor)
+   assertEquals(15_000_000L, partial.pendingMinor)
+   repository.planning.execute(F06Command.Pay("rent-rest", expected.id, "cash", 30_000_000, "$month-31"))
+   val snapshot = repository.planning.snapshot(month)
+   val paid = snapshot.occurrences.single()
+   assertEquals(0L, paid.paymentPendingMinor)
+   assertEquals(20_000_000L, paid.paidMinor)
+   assertEquals(20_000_000L, snapshot.comparisons.single().actualMinor)
+   assertEquals(10_000_000L, repository.workspace.snapshot().accounts.single().balanceMinor)
+   val saved = repository.exportFixture()
+   repository.restoreFixture(saved)
+   assertEquals(paid, repository.planning.snapshot(month).occurrences.single())
+  } finally { db.close() }
+ }
+ @Test fun currentMonthRevisionUpdatesAnUnpaidBillEvenAfterItsOriginalDueDate(): Unit = runBlocking {
+  val db = database()
+  try {
+   val repository = FinanceRepository(db)
+   repository.workspace.cash()
+   val month = java.time.YearMonth.now(BusinessTime.zone)
+   val template = bill(month = month.toString()).copy(name = "CarWash", day = 1)
+   repository.planning.execute(F06Command.SaveTemplate("original", template))
+   repository.planning.execute(F06Command.OpenPeriod("open", month.toString()))
+   val original = repository.planning.snapshot(month.toString()).occurrences.single()
+   assertEquals(month.atDay(1).toString(), original.dueDate)
+   repository.planning.execute(F06Command.SaveTemplate("revised", template.copy(version = 2, group = "Personal", day = 30)))
+   val revised = repository.planning.snapshot(month.toString()).occurrences.single()
+   assertEquals(original.id, revised.id)
+   assertEquals("Personal", revised.group)
+   assertEquals(month.atDay(minOf(30, month.lengthOfMonth())).toString(), revised.dueDate)
+   assertEquals(original.pendingMinor, revised.pendingMinor)
+   assertTrue(repository.workspace.snapshot().operations.isEmpty())
+  } finally { db.close() }
+ }
  @Test fun oracleT05ReceiptPostsOnceAndReducesExpectedSeparately():Unit = runBlocking {
   val db=database(); val r=FinanceRepository(db); r.workspace.cash(10000000)
   r.planning.execute(F06Command.SaveSalary("salary",SalaryVersion("salary-v1","2027-01",45000000,Currency.CRC,"cash")))
@@ -75,7 +179,7 @@ class F06PersistenceTest {
   val fixture=r.exportFixture();r.restoreFixture(fixture);assertEquals(fixture,r.exportFixture());val corrupt=JSONObject(fixture);corrupt.getJSONObject("workspace").getJSONObject("f06").getJSONArray("occurrences").getJSONObject(0).put("confirmedMinor",1)
   fails { r.restoreFixture(corrupt.toString()) };assertEquals(fixture,r.exportFixture());corrupt.getJSONObject("workspace").getJSONObject("f06").put("payloadVersion",99);fails { r.restoreFixture(corrupt.toString()) };assertEquals(fixture,r.exportFixture());db.close()
  }
- @Test fun financedAnnualPaymentConsumesOnlyOwnReserveOnceAndRollbackRetryIsDurable():Unit = runBlocking {
+ @Test fun financedAnnualPartialPaymentConsumesReserveOnceAndRollbackRetryIsDurable():Unit = runBlocking {
   val name="f06-durable.db";context.deleteDatabase(name)
   fun open()=Room.databaseBuilder(context,WealthDatabase::class.java,name).build()
   var db=open();var r=FinanceRepository(db);r.workspace.cash(1000000)
@@ -84,19 +188,22 @@ class F06PersistenceTest {
   val pay=F06Command.Pay("pay","bill:2027-01:0","cash",6000,"2027-01-31");r.planning.execute(pay)
   assertEquals(994000,r.workspace.snapshot().accounts.single().balanceMinor);assertEquals(0,r.workspace.snapshot().accounts.single().reservedMinor);assertEquals(6000,db.ledger().transactions().sumOf { it.expenseMinor })
   db.close();db=open();r=FinanceRepository(db);r.planning.execute(pay);r.planning.execute(F06Command.OpenPeriod("open","2027-01"));assertEquals(1,r.planning.snapshot().occurrences.size);assertEquals(1,r.workspace.snapshot().operations.size)
-  val before=r.exportFixture();fails { r.planning.execute(pay.copy(minor=1)) };fails { r.planning.execute(pay.copy(requestId="overpay",minor=1)) };assertEquals(before,r.exportFixture());db.close();context.deleteDatabase(name);Unit
+  assertEquals(4000L,r.planning.snapshot().occurrences.single().paymentPendingMinor)
+  val before=r.exportFixture();fails { r.planning.execute(pay.copy(minor=1)) };fails { r.planning.execute(pay.copy(requestId="overpay",minor=4001)) };assertEquals(before,r.exportFixture());db.close();context.deleteDatabase(name);Unit
  }
- @Test fun linkedCreditBillSeparatesEconomicConsumptionFromBookedCashAndOwnFxReversal():Unit = runBlocking {
+ @Test fun cardChargeForBillSeparatesEconomicConsumptionFromBookedCashAndOwnFxReversal():Unit = runBlocking {
   val db=database();val r=FinanceRepository(db);r.workspace.cash(1000000);r.workspace.cash(0,"card",Currency.CRC,"LIABILITY");r.workspace.cash(0,"usd",Currency.USD)
-  r.planning.execute(F06Command.SaveTemplate("t",bill(minor=1000)));r.planning.execute(F06Command.OpenPeriod("open","2027-01"))
+  r.planning.execute(F06Command.SaveTemplate("t",bill(minor=1000).copy(suggestedAccountId="card",nature=PlanNature.SUBSCRIPTION)));r.planning.execute(F06Command.OpenPeriod("open","2027-01"))
   r.planning.execute(F06Command.SavePlan("plan",PeriodPlan("2027-01",1,listOf(PlanRow("food","Service bill","Needs",PlanNature.VARIABLE_NEED,1000,Currency.CRC)))))
-  r.workspace.execute(F05Command.Record("purchase","card","CREDIT_PURCHASE",1000,"2027-01-15","Service","Service bill"))
-  r.planning.execute(F06Command.LinkPayment("link","bill:2027-01:0","purchase"))
+  r.planning.execute(F06Command.Pay("charge","bill:2027-01:0","card",1000,"2027-01-15"))
+  assertEquals(1000000L,r.workspace.snapshot().accounts.first { it.id=="cash" }.balanceMinor)
+  assertEquals(-1000L,r.workspace.snapshot().accounts.first { it.id=="card" }.balanceMinor)
+  r.restoreFixture(r.exportFixture())
   var snapshot=r.planning.snapshot("2027-01");assertEquals(0,snapshot.occurrences.single().pendingMinor);assertEquals(0,snapshot.comparisons.first { it.group=="Needs" }.consumptionMinor);assertEquals(0,snapshot.comparisons.first { it.group=="Essentials" }.actualMinor)
-  r.workspace.execute(F05Command.Transfer("settle","cash","card",400,400,"2027-01-31",bookedDate="2027-02-01",creditAllocations=listOf(CreditPaymentAllocation("purchase",400))))
+  r.workspace.execute(F05Command.Transfer("settle","cash","card",400,400,"2027-01-31",bookedDate="2027-02-01",creditAllocations=listOf(CreditPaymentAllocation("charge:ledger",400))))
   assertEquals(0,r.planning.snapshot("2027-01").comparisons.first { it.group=="Essentials" }.actualMinor)
   assertEquals(400,r.planning.snapshot("2027-02").comparisons.first { it.group=="Essentials" }.actualMinor);assertEquals(400,r.planning.snapshot("2027-02").occurrences.single().cashPaidMinor)
-  r.workspace.execute(F05Command.Refund("refund","purchase",100,"2027-02-02","Return"));assertEquals(100,r.planning.snapshot().occurrences.single().pendingMinor)
+  r.workspace.execute(F05Command.Refund("refund","charge:ledger",100,"2027-02-02","Return"));assertEquals(100,r.planning.snapshot().occurrences.single().pendingMinor)
   r.workspace.execute(F05Command.Void("void-settle","settle","Reverse settlement"));assertEquals(0,r.planning.snapshot("2027-02").targetBaseMinor[Currency.CRC] ?: 0L)
   r.workspace.execute(F05Command.Transfer("fx","cash","usd",50000,100,"2027-03-01",feeMinor=500,rate="0.002",rateSource="Actual amounts"));assertEquals(-500,r.planning.snapshot("2027-03").targetBaseMinor[Currency.CRC] ?: 0L)
   r.workspace.execute(F05Command.Void("fx-void","fx","Transfer cancelled"));val target=r.planning.snapshot("2027-03").targetBaseMinor;assertEquals(0,target[Currency.CRC] ?: 0L);assertEquals(0,target[Currency.USD] ?: 0L);db.close()

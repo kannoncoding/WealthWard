@@ -53,19 +53,19 @@ internal data class SummaryAmounts(
         cardDebt + other.cardDebt, cardCredit + other.cardCredit, termDebt + other.termDebt,
     )
 
-    fun display(type: SummaryType? = null): String = when (type) {
-        SummaryType.CASH -> cashLines()
-        SummaryType.CARD -> cardLines()
-        SummaryType.TERM_DEBT -> termLine()
-        null -> listOf(cashLines(), cardLines(), termLine()).joinToString("\n")
+    fun display(type: SummaryType? = null, label: (String) -> String = { it }): String {
+        val values = listOf(
+            Triple(SummaryType.CASH, "Saldo propio", cash),
+            Triple(SummaryType.CASH, "Reservas (incluidas en el saldo)", reserves),
+            Triple(SummaryType.CASH, "Sin asignar", unassigned),
+            Triple(SummaryType.CARD, "Deuda de tarjeta", cardDebt),
+            Triple(SummaryType.CARD, "Saldo a favor", cardCredit),
+            Triple(SummaryType.TERM_DEBT, "Principal de deuda a plazo", termDebt),
+        )
+        return values.filter { type == null || it.first == type }.joinToString("\n") { (_, name, value) ->
+            "${label(name)} ${amount(value)}"
+        }
     }
-
-    private fun cashLines() =
-        "Saldo propio ${amount(cash)}\nReservas (incluidas en el saldo) ${amount(reserves)}\nSin asignar ${amount(unassigned)}"
-
-    private fun cardLines() = "Deuda de tarjeta ${amount(cardDebt)}\nSaldo a favor ${amount(cardCredit)}"
-
-    private fun termLine() = "Principal de deuda a plazo ${amount(termDebt)}"
 
     fun csv(type: SummaryType? = null): List<String> {
         val active = listOf(SummaryType.CASH, SummaryType.CASH, SummaryType.CASH, SummaryType.CARD,

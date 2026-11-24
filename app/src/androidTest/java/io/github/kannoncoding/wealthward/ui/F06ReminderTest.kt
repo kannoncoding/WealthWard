@@ -69,4 +69,30 @@ class F06ReminderTest {
    adapter.update(emptyList())
   } finally { adapter.save(ReminderPreferences()); adapter.update(emptyList()); manager.cancel("test",1); manager.cancel(item.id,1); manager.cancel(disableItem.id,1); removeSent(listOf(item,disableItem)) }
  }
+
+ @Test fun threeLeadsCoexistAndReschedulingRejectsTheOldDate() {
+  grantPermission()
+  val adapter=LocalReminders(context)
+  val manager=context.getSystemService(NotificationManager::class.java)
+  val item=ReminderItem("multi-${UUID.randomUUID()}", "Pago de prueba", LocalDate.now().plusDays(14).toString(), "CRC 10.00")
+  val next=item.copy(date=LocalDate.parse(item.date).plusDays(3).toString())
+  try {
+   adapter.update(listOf(item))
+   adapter.save(ReminderPreferences(true,7,9,listOf(1,0)))
+   listOf(7,1,0).forEach { adapter.deliver(item.id,item.date,it) }
+   await("Each lead should have a notification") { manager.activeNotifications.count { it.tag.startsWith(item.id) } == 3 }
+   adapter.update(listOf(next))
+   await("Old notifications were not canceled") { manager.activeNotifications.none { it.tag.startsWith(item.id) } }
+   adapter.deliver(item.id,item.date,7)
+   assertTrue(manager.activeNotifications.none { it.tag.startsWith(item.id) })
+   adapter.deliver(item.id,next.date,7)
+   await("The new due date should deliver") { manager.activeNotifications.any { it.tag == item.id } }
+  } finally {
+   adapter.update(emptyList())
+   adapter.save(ReminderPreferences())
+   val edit=context.getSharedPreferences("local-reminders",android.content.Context.MODE_PRIVATE).edit()
+   for (date in listOf(item.date,next.date)) for (lead in listOf(7,1,0)) edit.remove("sent:${item.id}:$date:$lead")
+   edit.commit()
+  }
+ }
 }

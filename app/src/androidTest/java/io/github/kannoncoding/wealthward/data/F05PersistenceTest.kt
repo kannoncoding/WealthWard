@@ -17,6 +17,78 @@ class F05PersistenceTest {
  private fun database() = Room.inMemoryDatabaseBuilder(context,WealthDatabase::class.java).build()
  private suspend fun F05Repository.cash(id:String="a",amount:Long=50000000,currency:Currency=Currency.CRC,kind:String="CASH",product:String=id) = execute(F05Command.CreateAccount("create:$id",id,product,"Account $id",currency,kind,amount,"2026-01-01"))
  private suspend fun fails(block:suspend ()->Unit) { try { block(); fail("Invalid command must fail") } catch (_:DomainFailure) {} }
+ @Test fun accountEditConvertsAnUntouchedOpeningAndPreservesLaterHistory(): Unit = runBlocking {
+  val db = database()
+  try {
+   val repo = FinanceRepository(db)
+   val workspace = repo.workspace
+   workspace.cash(kind = "LIABILITY", amount = -10_001)
+   val change = F05Command.EditAccount("edit", "a", "Tarjeta USD", Currency.USD, "LIABILITY",
+    "2026-02-01", 50_000, "0.0025", Currency.CRC, -10_001)
+   fails { workspace.execute(change.copy(expectedBalanceMinor = -10_000)) }
+   fails { workspace.execute(change.copy(conversionRate = "0")) }
+   workspace.execute(change)
+   workspace.execute(change)
+   val converted = workspace.snapshot().accounts.single()
+   assertEquals("Tarjeta USD", converted.name)
+   assertEquals(Currency.USD, converted.currency)
+   assertEquals(-25L, converted.balanceMinor)
+   assertEquals(50_000L, converted.creditLimitMinor)
+   assertTrue(db.ledger().transactions().isEmpty())
+   val audit = workspace.snapshot().audit.single { it.requestId == "edit" }
+   assertEquals("a", audit.subjectId)
+   assertEquals("0.0025", JSONObject(audit.reason).getString("manualRate"))
+
+   workspace.execute(F05Command.Record("purchase", "a", "CREDIT_PURCHASE", 500, day, "Merchant", "Other"))
+   val metadataEdit = change.copy(requestId = "metadata", name = "Tarjeta", openingDate = day,
+    creditLimitMinor = 55_000, conversionRate = null, expectedCurrency = Currency.USD, expectedBalanceMinor = -525)
+   val postings = db.ledger().postings()
+   val operations = workspace.snapshot().operations
+   fails { workspace.execute(metadataEdit.copy(currency = Currency.CRC, conversionRate = "400")) }
+   fails { workspace.execute(metadataEdit.copy(kind = "CASH", creditLimitMinor = 0)) }
+   fails { workspace.execute(metadataEdit.copy(openingDate = "2026-11-02")) }
+   workspace.execute(metadataEdit)
+   val edited = workspace.snapshot().accounts.single()
+   assertEquals("Tarjeta", edited.name)
+   assertEquals(day, edited.openingDate)
+   assertEquals(-525L, edited.balanceMinor)
+   assertEquals(55_000L, edited.creditLimitMinor)
+   assertEquals(postings, db.ledger().postings())
+   assertEquals(operations, workspace.snapshot().operations)
+   repo.restoreFixture(repo.exportFixture())
+   assertEquals(edited, workspace.snapshot().accounts.single())
+
+   workspace.cash(id = "unused", amount = 500)
+   val physical = F05Command.EditAccount("to-physical", "unused", "Efectivo", Currency.CRC, "PHYSICAL_CASH",
+    "2026-01-01", 0, expectedCurrency = Currency.CRC, expectedBalanceMinor = 500)
+   workspace.execute(physical)
+   assertTrue(workspace.snapshot().accounts.single { it.id == "unused" }.productId.startsWith("cash-"))
+   workspace.execute(physical.copy(requestId = "to-deposit", kind = "CASH", name = "Depósito"))
+   val deposit = workspace.snapshot().accounts.single { it.id == "unused" }
+   assertFalse(deposit.productId.startsWith("cash-"))
+   assertEquals(500L, deposit.balanceMinor)
+  } finally { db.close() }
+ }
+
+ @Test fun alreadyDeductedExpenseKeepsBalanceAndRestoresWithoutPostings(): Unit = runBlocking {
+  val db = database()
+  try {
+   val repo = FinanceRepository(db)
+   repo.workspace.cash(amount = 100_000L)
+   val expense = F05Command.Record("food", "a", "EXPENSE", 12_500L, day, "Supermercado", "Comida", previouslyDeducted = true)
+   repo.workspace.execute(expense)
+   repo.workspace.execute(expense)
+   fails { repo.workspace.execute(expense.copy(requestId = "invalid-zero", amountMinor = 0, previouslyDeducted = false)) }
+   repo.workspace.execute(expense.copy(requestId = "zero", amountMinor = 0))
+   assertEquals(100_000L, repo.workspace.snapshot().accounts.single().balanceMinor)
+   assertTrue(repo.workspace.snapshot().operations.all { it.previouslyDeducted })
+   assertTrue(db.ledger().postings().isEmpty())
+   repo.restoreFixture(repo.exportFixture())
+   repo.workspace.execute(F05Command.Void("void-food", expense.requestId, "Duplicado"))
+   assertEquals(100_000L, repo.workspace.snapshot().accounts.single().balanceMinor)
+   repo.restoreFixture(repo.exportFixture())
+  } finally { db.close() }
+ }
  @Test fun oracleT01T02T04T17ReserveExpenseRedistributionAndPartialRefund() = runBlocking {
   val db=database(); val r=FinanceRepository(db).workspace
   r.cash(); r.execute(F05Command.FundReserve("fund","a","essentials","Essentials",46000000))

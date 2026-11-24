@@ -74,6 +74,7 @@ interface LedgerDao {
     @Query("SELECT COALESCE(SUM(p.minor),0) FROM postings p JOIN transactions t ON t.id=p.transactionId WHERE p.accountId=:id AND t.confirmed=1") suspend fun postedBalance(id: String): Long
     @Query("SELECT COUNT(*) FROM postings") fun observePostingCount(): Flow<Int>
     @Query("UPDATE accounts SET name=:name WHERE id=:id") suspend fun renameAccount(id: String, name: String)
+    @Update suspend fun updateAccount(value: AccountEntity)
     @Query("UPDATE accounts SET openingMinor=:minor WHERE id=:id") suspend fun setOpening(id: String, minor: Long)
     @Insert suspend fun insertAccount(value: AccountEntity)
     @Insert suspend fun insertTransaction(value: TransactionEntity)

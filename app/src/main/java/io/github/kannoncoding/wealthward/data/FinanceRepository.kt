@@ -18,9 +18,8 @@ class AppContainer(context: Context) {
     val repository = FinanceRepository(database)
     internal val files = F10Repository(context.applicationContext, database, repository)
     val dashboard = repository.dashboard
-    suspend fun initializeDemo() {
+    suspend fun initialize() {
         files.migrateProjectionLimits()
-        repository.seedWorkspace()
     }
 }
 class FinanceRepository(private val db: WealthDatabase) {
@@ -134,19 +133,23 @@ class FinanceRepository(private val db: WealthDatabase) {
             val accountById = accounts.associateBy { it.id }
             val transactionById = transactions.associateBy { it.id }
             val postingsByTransaction = postings.groupBy { it.transactionId }
-            val workspaceOperationIds = if (fixtureVersion == 3L) {
+            val workspaceOperations = if (fixtureVersion == 3L) {
                 root.getJSONObject("workspace").getJSONArray("operations").objects()
-                    .mapTo(mutableSetOf()) { it.getString("id") }
-            } else emptySet()
+                    .associateBy { it.getString("id") }
+            } else emptyMap()
             if(accounts.any { it.id.isBlank() || it.name.isBlank() || it.creditLimitMinor < 0 || it.kind !in setOf("CASH", "LIABILITY", "TERM_DEBT") } || accounts.map { it.id }.distinct().size != accounts.size || transactions.map { it.id }.distinct().size != transactions.size || postings.any { it.id.isBlank() } || postings.map { it.id }.distinct().size != postings.size) throw DomainFailure.Invalid("Invalid fixture identities")
             postings.forEach { p ->
                 if (accountById[p.accountId]?.currency != p.currency || p.transactionId !in transactionById || p.minor == 0L) throw DomainFailure.Invalid("Invalid fixture references")
             }
             transactions.forEach { t ->
                 val instant = Instant.parse(t.occurredAt)
-                val date = if (t.id in workspaceOperationIds) BusinessTime.date(instant) else LocalDate.parse(t.businessDate)
+                val date = if (t.id in workspaceOperations) BusinessTime.date(instant) else LocalDate.parse(t.businessDate)
                 val legs = postingsByTransaction[t.id].orEmpty().map { PostingLeg(it.accountId, Money(it.minor, Currency.valueOf(it.currency))) }
-                validateAccounts(PostingRequest(t.id, instant, date, FinancialType.valueOf(t.type), legs, t.periodId, t.expenseMinor), accountById)
+                if (workspaceOperations[t.id]?.optBoolean("previouslyDeducted") != true) {
+                    validateAccounts(PostingRequest(t.id, instant, date, FinancialType.valueOf(t.type), legs, t.periodId, t.expenseMinor), accountById)
+                } else if (t.type !in setOf("EXPENSE", "CREDIT_PURCHASE", "REVERSAL") || legs.isNotEmpty()) {
+                    throw DomainFailure.Invalid("Invalid already deducted expense")
+                }
             }
             val periods = root.getJSONArray("periods").objects().map { FinancePeriodEntity(it.getString("id"), it.getString("startsOn"), it.getString("endsOn")) }
             val versions = root.getJSONArray("planVersions").objects().map {

@@ -91,67 +91,67 @@ internal data class ProjectionLoading(val result: ProjectionResult? = null, val 
 }
 
 @Composable internal fun ProjectionDashboard(month: String, loading: ProjectionLoading, onDetail: () -> Unit) {
- Text("Pronóstico de cierre", style = MaterialTheme.typography.titleLarge)
+ Text(localized("Pronóstico de cierre"), style = MaterialTheme.typography.titleLarge)
  val result = loading.result
  if (result == null) {
   ProjectionStatus(loading)
  } else {
-  Text("Periodo $month · Corte ${result.input.cutoff} · Base ${result.input.base}")
+  Text(localized("Periodo {0} · Corte {1} · Base {2}", month, result.input.cutoff, result.input.base))
   ProjectionHeadline(result)
-  InfoCard("Comparativo del periodo", "Remanente inicial ${result.initialRemaining.display()}\nRemanente de flujo registrado ${result.actualRemaining.display()}\nAhorro propio financiado ${result.input.comparison.funded.displayByCurrency()}", 2)
+  InfoCard(localized("Comparativo del periodo"), localized("Remanente inicial {0}\nRemanente de flujo registrado {1}\nAhorro propio financiado {2}", result.initialRemaining.display(), result.actualRemaining.display(), result.input.comparison.funded.displayByCurrency()), 2)
   val first = result.cash.mapNotNull { it.firstDeficit }.minByOrNull { it.date }
   if (first != null) {
    val account = result.cash.first { it.account.id == first.accountId }.account
-   Text("Primer déficit de caja detectado · ${first.date} · ${account.name} · ${first.balance.display()}")
+   Text(localized("Primer déficit de caja detectado · {0} · {1} · {2}", first.date, account.name, first.balance.display()))
   }
-  if (result.cashIssues.isNotEmpty()) Text("Disponible hoy y calendario con datos incompletos.")
+  if (result.cashIssues.isNotEmpty()) Text(localized("Disponible hoy y calendario con datos incompletos."))
   val obligations = result.lines.filter { it.component == ProjectionComponent.OBLIGATION && it.date != null }
    .sortedBy { it.date }.take(3)
   obligations.forEach { Text("${it.date} · ${it.title} · ${it.amount.display()}") }
  }
- Action("Abrir proyección y calendario", onClick = onDetail)
+ Action(localized("Abrir proyección y calendario"), onClick = onDetail)
 }
 
 @Composable private fun ProjectionStatus(loading: ProjectionLoading) {
  if (loading.failed) {
-  Text("No se pudo calcular el pronóstico. Revisa el periodo y el corte.", color = MaterialTheme.colorScheme.error)
+  Text(localized("No se pudo calcular el pronóstico. Revisa el periodo y el corte."), color = MaterialTheme.colorScheme.error)
  } else {
   LinearProgressIndicator(Modifier.fillMaxWidth())
-  Text("Calculando pronóstico…")
+  Text(localized("Calculando pronóstico…"))
  }
 }
 
 @Composable private fun ProjectionHeadline(result: ProjectionResult) {
  val label = when (result.color) {
-  ProjectionColor.RED -> "Rojo"
-  ProjectionColor.ORANGE -> "Naranja"
-  ProjectionColor.YELLOW -> "Amarillo"
-  ProjectionColor.GREEN -> "Verde"
-  null -> "Datos incompletos"
+  ProjectionColor.RED -> localized("Rojo")
+  ProjectionColor.ORANGE -> localized("Naranja")
+  ProjectionColor.YELLOW -> localized("Amarillo")
+  ProjectionColor.GREEN -> localized("Verde")
+  null -> localized("Datos incompletos")
  }
- val primary = result.freeRecommended?.let { "Libre proyectado ${it.display()}" }
-  ?: "Libre recomendado pendiente de confirmación"
- val shortfall = result.shortfall?.takeIf { it.minor > 0L }?.let { "\nFaltante ${it.display()}" }.orEmpty()
+ val primary = result.freeRecommended?.let { localized("Libre proyectado {0}", it.display()) }
+  ?: localized("Libre recomendado pendiente de confirmación")
+ val shortfall = result.shortfall?.takeIf { it.minor > 0L }?.let { localized("\nFaltante {0}", it.display()) }.orEmpty()
  val provisional = result.totals?.free?.takeIf { result.color == null }?.let {
-  "\nRemanente provisional ${it.display()}"
+  localized("\nRemanente provisional {0}", it.display())
  }.orEmpty()
- val tint = when (result.color) {
-  ProjectionColor.RED -> Color(0xFFFADDE0)
-  ProjectionColor.ORANGE -> Color(0xFFFFE4C9)
-  ProjectionColor.YELLOW -> Color(0xFFFFF0BB)
-  ProjectionColor.GREEN -> Color(0xFFD9EEDC)
-  null -> Pastels[0]
+ val palette = LocalPalette.current
+ val status = when (result.color) {
+  ProjectionColor.RED -> palette.red
+  ProjectionColor.ORANGE, ProjectionColor.YELLOW -> palette.orange
+  ProjectionColor.GREEN -> palette.green
+  null -> StatusColors(palette.panel, palette.ink)
  }
- Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = tint, contentColor = Color(0xFF272238))) {
+ Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = status.background, contentColor = status.text)) {
   Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
    Text(label, style = MaterialTheme.typography.titleMedium)
-   Text("$primary$shortfall$provisional\n${result.explanation}")
+   Text("$primary$shortfall$provisional\n${localized(result.explanation)}")
   }
  }
 }
 
 private enum class ProjectionSection(val title: String) {
- SUMMARY("Comparativo"), CALCULATION("Detalle del cálculo"), CASH("Calendario de caja"), SCENARIO("Simulador")
+ SUMMARY(localized("Comparativo")), CALCULATION(localized("Detalle del cálculo")), CASH(localized("Calendario de caja")), SCENARIO(localized("Simulador"))
 }
 
 @Composable internal fun ProjectionScreen(
@@ -168,9 +168,9 @@ private enum class ProjectionSection(val title: String) {
  var showSettings by rememberSaveable { mutableStateOf(false) }
  val sectionState = rememberSaveableStateHolder()
  val result = loading.result
- Text(if (result == null) "Corte ${settings.cutoff} · Base ${settings.base}" else
-  "Periodo ${result.input.month} · Corte ${settings.cutoff} · Base ${settings.base}")
- Action(if (showSettings) "Ocultar ajustes del pronóstico" else "Ajustar pronóstico") { showSettings = !showSettings }
+ Text(if (result == null) localized("Corte {0} · Base {1}", settings.cutoff, settings.base) else
+  localized("Periodo {0} · Corte {1} · Base {2}", result.input.month, settings.cutoff, settings.base))
+ Action(if (showSettings) localized("Ocultar ajustes del pronóstico") else localized("Ajustar pronóstico")) { showSettings = !showSettings }
  if (showSettings) ProjectionSettingsForm(month, settings) {
   updateSettings(it)
   showSettings = false
@@ -215,36 +215,36 @@ private enum class ProjectionSection(val title: String) {
  var buffer by rememberSaveable(base, limits.buffer) { mutableStateOf(decimal(limits.buffer)) }
  var green by rememberSaveable(base, limits.green) { mutableStateOf(limits.green?.let(::decimal).orEmpty()) }
  var error by rememberSaveable { mutableStateOf("") }
- ProjectionField("Fecha de corte · AAAA-MM-DD", date) { date = it }
+ ProjectionField(localized("Fecha de corte · AAAA-MM-DD"), date) { date = it }
  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
   Currency.entries.forEach {
    FilterChip(selected = it == currency, onClick = { base = it.name }, label = { Text(it.name) },
     modifier = Modifier.heightIn(min = 48.dp))
   }
  }
- ProjectionField("Tasa opcional · $currency por 1 $other", value, numeric = true) { value = it }
+ ProjectionField(localized("Tasa opcional · {0} por 1 {1}", currency, other), value, numeric = true) { value = it }
  if (value.isNotBlank()) {
-  ProjectionField("Fecha de la tasa · AAAA-MM-DD", rateDate) { rateDate = it }
-  ProjectionField("Fuente de la tasa", source) { source = it }
+  ProjectionField(localized("Fecha de la tasa · AAAA-MM-DD"), rateDate) { rateDate = it }
+  ProjectionField(localized("Fuente de la tasa"), source) { source = it }
  }
- ProjectionField("Colchón adicional (C) · $currency", buffer, numeric = true) { buffer = it }
- Text("Incluye solo el colchón adicional a los fondos ya protegidos.")
- ProjectionField("Margen para verde (G) · $currency", green, numeric = true) { green = it }
- Text("Vacío aplica el margen predeterminado de ${ProjectionInput.DEFAULT_GREEN_MARGIN.display()}.")
- Action("Aplicar al pronóstico") {
+ ProjectionField(localized("Colchón adicional (C) · {0}", currency), buffer, numeric = true) { buffer = it }
+ Text(localized("Incluye solo el colchón adicional a los fondos ya protegidos."))
+ ProjectionField(localized("Margen para verde (G) · {0}", currency), green, numeric = true) { green = it }
+ Text(localized("Vacío aplica el margen predeterminado de {0}.", ProjectionInput.DEFAULT_GREEN_MARGIN.display()))
+ Action(localized("Aplicar al pronóstico")) {
   val cutoff = runCatching { LocalDate.parse(date) }.getOrNull()
   val rate = value.replace(',', '.').trim().toBigDecimalOrNull()
   val rateAt = runCatching { LocalDate.parse(rateDate) }.getOrNull()
   val cushion = runCatching { Money.parse(buffer.trim().replace(',', '.').ifBlank { "0" }, currency).minor }.getOrNull()
   val threshold = runCatching { Money.parse(green.trim().replace(',', '.'), currency).minor }.getOrNull()
   error = when {
-   cutoff == null -> "Indica una fecha de corte válida."
-   cutoff > LocalDate.now(BusinessTime.zone) -> "El corte debe ser de hoy o anterior."
-   cutoff > YearMonth.parse(month).atEndOfMonth() -> "El corte debe ser anterior al cierre del periodo o coincidir con él."
+   cutoff == null -> localized("Indica una fecha de corte válida.")
+   cutoff > LocalDate.now(BusinessTime.zone) -> localized("El corte debe ser de hoy o anterior.")
+   cutoff > YearMonth.parse(month).atEndOfMonth() -> localized("El corte debe ser anterior al cierre del periodo o coincidir con él.")
    value.isNotBlank() && (rate == null || rate.signum() <= 0 || rateAt == null || rateAt > cutoff || source.isBlank()) ->
-    "Indica una tasa positiva, su fuente y una fecha válida hasta el corte."
-   cushion == null || cushion < 0L -> "Indica un colchón mayor o igual a cero."
-   green.isNotBlank() && (threshold == null || threshold <= 0L) -> "Indica un margen mayor que cero."
+    localized("Indica una tasa positiva, su fuente y una fecha válida hasta el corte.")
+   cushion == null || cushion < 0L -> localized("Indica un colchón mayor o igual a cero.")
+   green.isNotBlank() && (threshold == null || threshold <= 0L) -> localized("Indica un margen mayor que cero.")
    else -> ""
   }
   if (error.isEmpty() && cutoff != null && cushion != null) {
@@ -268,7 +268,7 @@ private enum class ProjectionSection(val title: String) {
  Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
 }
 
-private fun Money?.display(): String = this?.let { money(it.minor, it.currency) } ?: "Sin confirmar"
+private fun Money?.display(): String = this?.let { money(it.minor, it.currency) } ?: localized("Sin confirmar")
 
 private fun List<Money>.displayByCurrency(): String = groupBy { it.currency }.entries
  .joinToString(" · ") { (currency, amounts) -> "$currency ${total(amounts.map { it.minor })}" }
@@ -277,9 +277,9 @@ private fun List<Money>.displayByCurrency(): String = groupBy { it.currency }.en
 @Composable private fun ProjectionComparisonCards(result: ProjectionResult) {
  val comparison = result.input.comparison
  val initialNote = when {
-  result.input.planVersion == null -> "Sin presupuesto inicial registrado"
-  comparison.initialOpening == null -> "Apertura prevista pendiente de confirmar"
-  result.initialRemaining == null -> "Para calcular el remanente en la moneda base, indica la tasa al corte"
+  result.input.planVersion == null -> localized("Sin presupuesto inicial registrado")
+  comparison.initialOpening == null -> localized("Apertura prevista pendiente de confirmar")
+  result.initialRemaining == null -> localized("Para calcular el remanente en la moneda base, indica la tasa al corte")
   else -> null
  }
  val initialEntries = comparison.initialIncome + comparison.initialFinancing
@@ -289,49 +289,49 @@ private fun List<Money>.displayByCurrency(): String = groupBy { it.currency }.en
   val outflow = initialUses.filter { it.currency == currency }.sumOf { it.decimal() }
   "$currency ${(inflow - outflow).toPlainString()}"
  }.ifEmpty { "—" }
- InfoCard("Presupuesto inicial · ${result.input.month}", listOfNotNull(
+ InfoCard(localized("Presupuesto inicial · {0}", result.input.month), listOfNotNull(
   initialNote,
-  "Remanente inicial ${result.initialRemaining.display()}",
-  "Subtotal previsto sin apertura $initialFlow",
-  comparison.initialOpening?.let { "Apertura utilizable prevista ${it.displayByCurrency()}" },
-  "Ingresos previstos ${comparison.initialIncome.displayByCurrency()}",
-  "Financiación prevista ${comparison.initialFinancing.displayByCurrency()}",
-  "Usos previstos ${comparison.initialUses.displayByCurrency()}",
-  "Colchón previsto ${comparison.initialBuffer.displayByCurrency()}",
-  "Ahorro previsto ${comparison.plannedSaving.displayByCurrency()}",
+  localized("Remanente inicial {0}", result.initialRemaining.display()),
+  localized("Subtotal previsto sin apertura {0}", initialFlow),
+  comparison.initialOpening?.let { localized("Apertura utilizable prevista {0}", it.displayByCurrency()) },
+  localized("Ingresos previstos {0}", comparison.initialIncome.displayByCurrency()),
+  localized("Financiación prevista {0}", comparison.initialFinancing.displayByCurrency()),
+  localized("Usos previstos {0}", comparison.initialUses.displayByCurrency()),
+  localized("Colchón previsto {0}", comparison.initialBuffer.displayByCurrency()),
+  localized("Ahorro previsto {0}", comparison.plannedSaving.displayByCurrency()),
  ).joinToString("\n"), 0)
- InfoCard("Real registrado al ${result.input.cutoff}", listOf(
-  "Remanente de flujo ${result.actualRemaining.display()}",
-  "Remanente de flujo sin apertura ${result.actualRemainingWithoutOpening.display()}",
-  "Apertura de caja ${comparison.opening.displayByCurrency()}",
-  "Ingresos ganados recibidos ${comparison.received.displayByCurrency()}",
-  "Financiación recibida ${comparison.financing.displayByCurrency()}",
-  "Pagos externos netos ${comparison.paid.displayByCurrency()}",
-  "Ajustes de caja ${comparison.adjustments.displayByCurrency()}",
-  "Gasto económico ${comparison.economicExpense.displayByCurrency()}",
-  "Principal pagado ${comparison.principalPaid.displayByCurrency()}",
-  "Ahorro propio financiado ${comparison.funded.displayByCurrency()}",
+ InfoCard(localized("Real registrado al {0}", result.input.cutoff), listOf(
+  localized("Remanente de flujo {0}", result.actualRemaining.display()),
+  localized("Remanente de flujo sin apertura {0}", result.actualRemainingWithoutOpening.display()),
+  localized("Apertura de caja {0}", comparison.opening.displayByCurrency()),
+  localized("Ingresos ganados recibidos {0}", comparison.received.displayByCurrency()),
+  localized("Financiación recibida {0}", comparison.financing.displayByCurrency()),
+  localized("Pagos externos netos {0}", comparison.paid.displayByCurrency()),
+  localized("Ajustes de caja {0}", comparison.adjustments.displayByCurrency()),
+  localized("Gasto económico {0}", comparison.economicExpense.displayByCurrency()),
+  localized("Principal pagado {0}", comparison.principalPaid.displayByCurrency()),
+  localized("Ahorro propio financiado {0}", comparison.funded.displayByCurrency()),
  ).joinToString("\n"), 2)
  result.native.values.forEach {
-  InfoCard("Pronóstico · ${it.free.currency}", listOf(
-   "Saldo líquido al corte ${it.liquid.display()}",
-   "Fondos protegidos ${it.protected.display()}",
-  "Saldo utilizable para el periodo ${it.available.display()}",
-   "Obligaciones pendientes ${it.obligations.display()}",
-   "Ahorro previsto pendiente ${it.saving.display()}",
-   "Remanente ${if (result.color == null) "provisional " else ""}${it.free.display()}",
+  InfoCard(localized("Pronóstico · {0}", it.free.currency), listOf(
+   localized("Saldo líquido al corte {0}", it.liquid.display()),
+   localized("Fondos protegidos {0}", it.protected.display()),
+  localized("Saldo utilizable para el periodo {0}", it.available.display()),
+   localized("Obligaciones pendientes {0}", it.obligations.display()),
+   localized("Ahorro previsto pendiente {0}", it.saving.display()),
+   localized("Remanente {0}{1}", if (result.color == null) localized("provisional ") else "", it.free.display()),
   ).joinToString("\n"), 3)
  }
  val target = result.input.target
  if (target == null || target.minor == 0L) {
-  InfoCard("Meta T · ${result.input.month}", "Sin meta", 1)
+  InfoCard(localized("Meta Sobrante · {0}", result.input.month), localized("Sin meta"), 1)
  } else {
   val forecast = result.targetProgress?.movePointRight(2)?.setScale(2, RoundingMode.HALF_UP)?.toPlainString()
   val basis = result.totals?.free.display()
-  InfoCard("Meta T · ${result.input.month}", buildString {
-   append("Meta ${target.display()}\nBase Pronóstico $basis")
-   append("\nProgreso Pronóstico ${forecast?.let { "$it %" } ?: "Sin confirmar"}")
-   if (result.color == null) append("\nPronóstico provisional")
+  InfoCard(localized("Meta Sobrante · {0}", result.input.month), buildString {
+   append(localized("Querés que te sobre: {0}\nSobrante proyectado: {1}", target.display(), basis))
+   append(localized("\nAvance hacia la meta {0}", forecast?.let { "$it %" } ?: localized("Sin confirmar")))
+   if (result.color == null) append(localized("\nPronóstico provisional"))
   }, 1)
  }
  ProjectionIssues(result.issues)
@@ -339,19 +339,19 @@ private fun List<Money>.displayByCurrency(): String = groupBy { it.currency }.en
 
 @Composable private fun ProjectionIssues(issues: List<String>) {
  if (issues.isNotEmpty()) {
-  Text("Datos por completar", style = MaterialTheme.typography.titleMedium)
-  ProjectionPage(issues.distinct()) { Text("• $it") }
+  Text(localized("Datos por completar"), style = MaterialTheme.typography.titleMedium)
+  ProjectionPage(issues.distinct()) { Text("• ${AppLanguage.current.backendMessage(it)}") }
  }
 }
 
-private val projectionComponentNames = mapOf(
- ProjectionComponent.LIQUID to "L · Saldo líquido contabilizado",
- ProjectionComponent.PROTECTED to "P · Fondos financiados protegidos",
- ProjectionComponent.INCOME to "I · Ingresos pendientes incluidos",
- ProjectionComponent.OBLIGATION to "O · Obligaciones pendientes",
- ProjectionComponent.VARIABLE to "V · Presupuesto variable restante",
- ProjectionComponent.SAVING to "S · Ahorro por financiar",
- ProjectionComponent.BUFFER to "C · Colchón adicional",
+private val projectionComponentNames get() = mapOf(
+ ProjectionComponent.LIQUID to localized("L · Saldo líquido contabilizado"),
+ ProjectionComponent.PROTECTED to localized("P · Fondos financiados protegidos"),
+ ProjectionComponent.INCOME to localized("I · Ingresos pendientes incluidos"),
+ ProjectionComponent.OBLIGATION to localized("O · Obligaciones pendientes"),
+ ProjectionComponent.VARIABLE to localized("V · Presupuesto variable restante"),
+ ProjectionComponent.SAVING to localized("S · Ahorro por financiar"),
+ ProjectionComponent.BUFFER to localized("C · Colchón adicional"),
 )
 
 @Composable private fun ProjectionCalculation(
@@ -359,16 +359,16 @@ private val projectionComponentNames = mapOf(
  names: Map<String, String>,
  source: @Composable (ProjectionLink) -> Unit,
 ) {
- Text("A = L − P\nAntes del colchón y ahorro = A + I − O − V\nF = A + I − O − V − C − S")
- Text("Margen para verde (G) · ${result.input.greenMargin.display()}")
+ Text(localized("A = L − P\nAntes del colchón y ahorro = A + I − O − V\nF = A + I − O − V − C − S"))
+ Text(localized("Margen para verde (G) · {0}", result.input.greenMargin.display()))
  result.input.rates.filter { it.date <= result.input.cutoff && it.to == result.input.base }.forEach {
-  Text("Tasa registrada · 1 ${it.from} = ${it.rate.toPlainString()} ${it.to} · ${it.date} · ${it.source}")
+  Text(localized("Tasa registrada · 1 {0} = {1} {2} · {3} · {4}", it.from, it.rate.toPlainString(), it.to, it.date, it.source))
  }
  result.totals?.let {
-  Text("Disponible para el periodo (A) ${it.available.display()}")
-  Text("Antes del colchón y ahorro ${it.obligationsMargin.display()}")
-  Text("Después del colchón ${it.afterBuffer.display()}")
-  Text("Remanente con signo (F) ${it.free.display()}")
+  Text(localized("Disponible para el periodo (A) {0}", it.available.display()))
+  Text(localized("Antes del colchón y ahorro {0}", it.obligationsMargin.display()))
+  Text(localized("Después del colchón {0}", it.afterBuffer.display()))
+  Text(localized("Remanente con signo (F) {0}", it.free.display()))
  }
  ProjectionIssues(result.issues)
  val groups = remember(result.lines) { result.lines.groupBy { it.component } }
@@ -407,31 +407,35 @@ private val projectionComponentNames = mapOf(
  names: Map<String, String>,
  source: @Composable (ProjectionLink) -> Unit,
 ) {
- Text("Saldos por cuenta desde el corte. Cuando falta el orden del día, se muestran los pagos antes de los cobros.")
+ Text(localized("Saldos por cuenta desde el corte. Cuando falta el orden del día, se muestran los pagos antes de los cobros."))
  ProjectionIssues(result.cashIssues)
- result.cashWarnings.forEach { Text(it) }
- if (result.cash.isEmpty()) Text("Sin cuentas líquidas en este corte.")
+ result.cashWarnings.forEach { warning ->
+  val suffix = ": se proyectan pagos antes de cobros porque falta su orden real"
+  Text(if (warning.endsWith(suffix)) localized("{0}: se proyectan pagos antes de cobros porque falta su orden real",
+   warning.removeSuffix(suffix)) else AppLanguage.current.backendMessage(warning))
+ }
+ if (result.cash.isEmpty()) Text(localized("Sin cuentas líquidas en este corte."))
  var selected by rememberSaveable { mutableStateOf("") }
  result.cash.forEach { cash ->
   val account = cash.account
   val first = cash.firstDeficit
   val candidateNames = cash.suggestedTransferFrom.mapNotNull { names[it] }
   InfoCard(account.name, buildString {
-   append("Saldo al corte ${account.balance.display()}")
-   append("\nDisponible hoy ${cash.safeToday.display()} · horizonte ${cash.horizon}")
-   if (first != null) append("\nPrimer déficit detectado ${first.date} · ${first.balance.display()}")
-   if (candidateNames.isNotEmpty()) append("\nPosible origen de transferencia: ${candidateNames.joinToString()}")
+   append(localized("Saldo al corte {0}", account.balance.display()))
+   append(localized("\nDisponible hoy {0} · horizonte {1}", cash.safeToday.display(), cash.horizon))
+   if (first != null) append(localized("\nPrimer déficit detectado {0} · {1}", first.date, first.balance.display()))
+   if (candidateNames.isNotEmpty()) append(localized("\nPosible origen de transferencia: {0}", candidateNames.joinToString()))
   }, if (first == null) 3 else 1)
-  Action(if (selected == account.id) "Ocultar fechas · ${account.name}" else "Ver fechas · ${account.name}") {
+  Action(if (selected == account.id) localized("Ocultar fechas · {0}", account.name) else localized("Ver fechas · {0}", account.name)) {
    selected = if (selected == account.id) "" else account.id
   }
   if (selected == account.id) {
    val points = remember(result.calendar, account.id) { result.calendar.filter { it.accountId == account.id } }
-   if (points.isEmpty()) Text("Sin eventos de caja previstos.")
+   if (points.isEmpty()) Text(localized("Sin eventos de caja previstos."))
    key(account.id) {
     ProjectionPage(points) { point ->
-     val change = point.amount?.let { "Movimiento previsto ${it.display()}\n" }.orEmpty()
-     InfoCard("${point.date} · ${point.title}", "${change}Saldo previsto ${point.balance.display()}", 2)
+     val change = point.amount?.let { localized("Movimiento previsto {0}\n", it.display()) }.orEmpty()
+     InfoCard("${point.date} · ${point.title}", localized("{0}Saldo previsto {1}", change, point.balance.display()), 2)
      ProjectionSources(point.links, source)
     }
    }
@@ -439,10 +443,10 @@ private val projectionComponentNames = mapOf(
  }
  var showDaily by rememberSaveable { mutableStateOf(false) }
  if (result.cashDaily.isNotEmpty()) {
-  Action(if (showDaily) "Ocultar cierres diarios" else "Ver cierres diarios por moneda") { showDaily = !showDaily }
+  Action(if (showDaily) localized("Ocultar cierres diarios") else localized("Ver cierres diarios por moneda")) { showDaily = !showDaily }
   if (showDaily) {
    ProjectionPage(result.cashDaily.entries.sortedBy { it.key }) { (day, balances) ->
-    InfoCard(day.toString(), "Cierre previsto ${balances.displayByCurrency()}", 2)
+    InfoCard(day.toString(), localized("Cierre previsto {0}", balances.displayByCurrency()), 2)
    }
   }
  }
@@ -451,7 +455,7 @@ private val projectionComponentNames = mapOf(
 @Composable private fun <T> ProjectionPage(items: List<T>, content: @Composable (T) -> Unit) {
  var limit by rememberSaveable { mutableStateOf(20) }
  items.take(limit).forEach { content(it) }
- if (items.size > limit) Action("Ver 20 más · ${items.size - limit} restantes") { limit += 20 }
+ if (items.size > limit) Action(localized("Ver 20 más · {0} restantes", items.size - limit)) { limit += 20 }
 }
 
 @Composable private fun ProjectionSources(links: List<ProjectionLink>, source: @Composable (ProjectionLink) -> Unit) {
@@ -459,7 +463,7 @@ private val projectionComponentNames = mapOf(
  val unique = remember(links) { links.distinct() }
  var showSources by rememberSaveable { mutableStateOf(false) }
  if (unique.size > 3) {
-  Action(if (showSources) "Ocultar orígenes · ${unique.size}" else "Ver orígenes · ${unique.size}") { showSources = !showSources }
+  Action(if (showSources) localized("Ocultar orígenes · {0}", unique.size) else localized("Ver orígenes · {0}", unique.size)) { showSources = !showSources }
  }
  if (unique.size <= 3 || showSources) ProjectionPage(unique, source)
 }
@@ -472,16 +476,16 @@ private val projectionComponentNames = mapOf(
  open: (String, String) -> Unit,
 ) {
  val heading = when (link.source) {
-  ProjectionSource.ACCOUNT -> "Cuenta"
-  ProjectionSource.OCCURRENCE -> "Obligación o cobro"
-  ProjectionSource.MOVEMENT -> "Movimiento"
-  ProjectionSource.GOAL -> "Meta de ahorro"
-  ProjectionSource.PLAN -> "Partida del plan"
-  ProjectionSource.SCENARIO -> "Escenario simulado"
-  ProjectionSource.CREDIT -> "Estado de tarjeta"
+  ProjectionSource.ACCOUNT -> localized("Cuenta")
+  ProjectionSource.OCCURRENCE -> localized("Obligación o cobro")
+  ProjectionSource.MOVEMENT -> localized("Movimiento")
+  ProjectionSource.GOAL -> localized("Meta de ahorro")
+  ProjectionSource.PLAN -> localized("Partida del plan")
+  ProjectionSource.SCENARIO -> localized("Escenario simulado")
+  ProjectionSource.CREDIT -> localized("Estado de tarjeta")
  }
  var expanded by rememberSaveable(link.id) { mutableStateOf(false) }
- Action(if (expanded) "Ocultar origen · $heading" else "Ver origen · $heading") { expanded = !expanded }
+ Action(if (expanded) localized("Ocultar origen · {0}", heading) else localized("Ver origen · {0}", heading)) { expanded = !expanded }
  if (!expanded) return
  val occurrence = (plan.occurrences + commitments.installments).firstOrNull { it.id == link.id }
  val operation = ledger.operations.firstOrNull { it.id == link.id }
@@ -491,43 +495,43 @@ private val projectionComponentNames = mapOf(
  val row = plan.plans.asReversed().firstNotNullOfOrNull { version -> version.rows.firstOrNull { it.id == link.id } }
  when (link.source) {
   ProjectionSource.ACCOUNT -> if (account != null) InfoCard(account.name,
-   "Saldo registrado actual ${money(account.balanceMinor, account.currency)}\nReservas actuales ${money(account.reservedMinor, account.currency)}", 0)
-  else Text("La cuenta ya no aparece en el registro actual.")
+   localized("Saldo registrado actual {0}\nReservas actuales {1}", money(account.balanceMinor, account.currency), money(account.reservedMinor, account.currency)), 0)
+  else Text(localized("La cuenta ya no aparece en el registro actual."))
   ProjectionSource.OCCURRENCE -> if (occurrence != null) {
    InfoCard(occurrence.name, listOf(
-    "Vence ${occurrence.dueDate} · periodo financiador ${occurrence.financingMonth}",
-    "Estimado ${money(occurrence.expectedMinor, occurrence.currency)}",
-    "Pagado ${money(occurrence.cashPaidMinor, occurrence.currency)}",
-    "Pendiente actual ${money(occurrence.pendingMinor, occurrence.currency)}",
+    localized("Vence {0} · periodo financiador {1}", occurrence.dueDate, occurrence.financingMonth),
+    localized("Estimado {0}", money(occurrence.expectedMinor, occurrence.currency)),
+    localized("Pagado {0}", money(occurrence.cashPaidMinor, occurrence.currency)),
+    localized("Pendiente actual {0}", money(occurrence.pendingMinor, occurrence.currency)),
    ).joinToString("\n"), 0)
    if (occurrence.pendingMinor > 0L) {
     val debt = occurrence.templateId.startsWith("term-debt:")
-    Action(if (occurrence.nature == PlanNature.INCOME) "Registrar recepción real" else "Registrar pago real") {
+    Action(if (occurrence.nature == PlanNature.INCOME) localized("Registrar recepción real") else localized("Registrar pago real")) {
      if (debt) open("f07installment", "${occurrence.nominalMonth}/${occurrence.templateId.removePrefix("term-debt:")}")
      else open("f06pay", occurrence.id)
     }
    }
-  } else Text("El detalle de este vencimiento aún no está disponible en el plan actual.")
+  } else Text(localized("El detalle de este vencimiento aún no está disponible en el plan actual."))
   ProjectionSource.MOVEMENT -> if (operation != null) {
    val origin = ledger.accounts.firstOrNull { it.id == operation.accountId }
    InfoCard(operation.merchant.ifBlank { operation.category.ifBlank { operation.type } },
     listOfNotNull(operation.date, origin?.name, origin?.currency?.let { money(operation.amountMinor, it) },
      operation.category.ifBlank { null }, operation.notes.ifBlank { null }).joinToString("\n"), 0)
-  } else Text("El movimiento ya no aparece en el registro actual.")
+  } else Text(localized("El movimiento ya no aparece en el registro actual."))
   ProjectionSource.GOAL -> if (goal != null) InfoCard(goal.goal.name, listOf(
-   "Meta ${money(goal.goal.targetMinor, goal.goal.currency)}",
-   "Aporte mensual previsto ${money(goal.goal.monthlyMinor, goal.goal.currency)}",
-   "Ahorro financiado actual ${money(goal.fundedMinor, goal.goal.currency)}",
-  ).joinToString("\n"), 0) else Text("La meta ya no aparece en el registro actual.")
+   localized("Meta {0}", money(goal.goal.targetMinor, goal.goal.currency)),
+   localized("Aporte mensual previsto {0}", money(goal.goal.monthlyMinor, goal.goal.currency)),
+   localized("Ahorro financiado actual {0}", money(goal.fundedMinor, goal.goal.currency)),
+  ).joinToString("\n"), 0) else Text(localized("La meta ya no aparece en el registro actual."))
   ProjectionSource.PLAN -> if (row != null) InfoCard(row.name,
    "${row.group} · ${natureName(row.nature)} · ${money(row.minor, row.currency)}", 0)
-  else Text("El cálculo muestra el importe de la partida al corte.")
-  ProjectionSource.CREDIT -> if (statement != null) InfoCard("Corte ${statement.statement.cutoffDate}",
-   "Vence ${statement.statement.dueDate} · Pendiente actual " +
+  else Text(localized("El cálculo muestra el importe de la partida al corte."))
+  ProjectionSource.CREDIT -> if (statement != null) InfoCard(localized("Corte {0}", statement.statement.cutoffDate),
+   localized("Vence {0} · Pendiente actual ", statement.statement.dueDate) +
     (ledger.accounts.firstOrNull { it.id == statement.statement.accountId }?.let { money(statement.pendingMinor, it.currency) }
-     ?: "Sin confirmar"), 0)
-  else Text("Consulta el origen del movimiento vinculado para ver la compra.")
-  ProjectionSource.SCENARIO -> Text("Importe temporal introducido en el simulador.")
+     ?: localized("Sin confirmar")), 0)
+  else Text(localized("Consulta el origen del movimiento vinculado para ver la compra."))
+  ProjectionSource.SCENARIO -> Text(localized("Importe temporal introducido en el simulador."))
  }
 }
 
@@ -540,27 +544,27 @@ private val projectionComponentNames = mapOf(
  var submittedSaving by rememberSaveable(currency) { mutableStateOf(0L) }
  var submittedAccount by rememberSaveable(currency) { mutableStateOf("") }
  var error by rememberSaveable { mutableStateOf("") }
- Text("Prueba un gasto adicional o un aumento de ahorro. El escenario es temporal.")
- ProjectionField("Gasto adicional · $currency", spend, numeric = true) { spend = it }
- ProjectionField("Aumento de ahorro · $currency", saving, numeric = true) { saving = it }
+ Text(localized("Prueba un gasto adicional o un aumento de ahorro. El escenario es temporal."))
+ ProjectionField(localized("Gasto adicional · {0}", currency), spend, numeric = true) { spend = it }
+ ProjectionField(localized("Aumento de ahorro · {0}", currency), saving, numeric = true) { saving = it }
  val accounts = result.input.accounts.filter { it.balance.currency == currency }
  if (accounts.isNotEmpty()) {
-  Text("Cuenta para el gasto simulado")
+  Text(localized("Cuenta para el gasto simulado"))
   FilterChip(selected = accountId.isEmpty(), onClick = { accountId = "" },
-   label = { Text("Sin cuenta · solo cierre") }, modifier = Modifier.heightIn(min = 48.dp))
+   label = { Text(localized("Sin cuenta · solo cierre")) }, modifier = Modifier.heightIn(min = 48.dp))
   accounts.forEach { account ->
    FilterChip(selected = account.id == accountId, onClick = { accountId = account.id },
     label = { Text(account.name) }, modifier = Modifier.heightIn(min = 48.dp))
   }
  }
- Action("Calcular escenario") {
+ Action(localized("Calcular escenario")) {
   fun amount(raw: String): Long? = runCatching {
    Money.parse(raw.trim().replace(',', '.').ifBlank { "0" }, currency).minor.takeIf { it >= 0 }
   }.getOrNull()
   val spending = amount(spend)
   val contribution = amount(saving)
   if (spending == null || contribution == null) {
-   error = "Indica importes válidos mayores o iguales a cero."
+   error = localized("Indica importes válidos mayores o iguales a cero.")
   } else {
    error = ""
    submittedSpend = spending
@@ -568,7 +572,7 @@ private val projectionComponentNames = mapOf(
    submittedAccount = accounts.firstOrNull { it.id == accountId }?.id.orEmpty()
   }
  }
- Action("Restablecer escenario") {
+ Action(localized("Restablecer escenario")) {
   spend = ""
   saving = ""
   accountId = ""
@@ -591,17 +595,17 @@ private val projectionComponentNames = mapOf(
    failed = true
   }
  }
- Text("Resultado simulado", style = MaterialTheme.typography.titleMedium)
- Text("Remanente original con signo ${result.totals?.free.display()}")
+ Text(localized("Resultado simulado"), style = MaterialTheme.typography.titleMedium)
+ Text(localized("Remanente original con signo {0}", result.totals?.free.display()))
  val output = simulated
  if (output != null) {
   ProjectionHeadline(output)
-  Text("Remanente simulado con signo ${output.totals?.free.display()}")
+  Text(localized("Remanente simulado con signo {0}", output.totals?.free.display()))
   if (submittedAccount.isNotBlank()) output.cash.firstOrNull { it.account.id == submittedAccount }?.let {
-   Text("Disponible simulado · ${it.account.name} · ${it.safeToday.display()}")
-   if (it.firstDeficit != null) Text("Déficit simulado · ${it.firstDeficit.date} · ${it.firstDeficit.balance.display()}")
+   Text(localized("Disponible simulado · {0} · {1}", it.account.name, it.safeToday.display()))
+   if (it.firstDeficit != null) Text(localized("Déficit simulado · {0} · {1}", it.firstDeficit.date, it.firstDeficit.balance.display()))
   }
   ProjectionIssues(output.issues)
- } else if (failed) ProjectionError("No se pudo calcular el escenario con esos importes.")
+ } else if (failed) ProjectionError(localized("No se pudo calcular el escenario con esos importes."))
  else LinearProgressIndicator(Modifier.fillMaxWidth())
 }

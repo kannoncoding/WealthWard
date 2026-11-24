@@ -10,6 +10,19 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = set("""
+app/src/main/java/io/github/kannoncoding/wealthward/ui/Appearance.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/AccountMonth.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/CompactActions.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/LanguageSettings.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/EnglishCatalog.kt
+app/src/main/res/drawable-nodpi/cat_launch_art.png
+app/src/main/res/drawable-nodpi/wealthward_logo.png
+app/src/main/res/drawable/ic_notification_dollar.xml
+app/src/main/res/values-v31/themes.xml
+app/src/main/res/font/inter_variable.ttf
+app/src/main/res/raw/inter_license.txt
+app/src/test/java/io/github/kannoncoding/wealthward/ui/AccountMonthTest.kt
+docs/monthly-rollover.md
 app/src/main/java/io/github/kannoncoding/wealthward/data/F10Repository.kt
 app/src/main/java/io/github/kannoncoding/wealthward/data/F10Summary.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/F10Screens.kt
@@ -56,6 +69,7 @@ app/src/main/java/io/github/kannoncoding/wealthward/data/F05Repository.kt
 app/src/main/java/io/github/kannoncoding/wealthward/data/WealthDatabase.kt
 app/src/main/java/io/github/kannoncoding/wealthward/domain/Finance.kt
 app/src/main/java/io/github/kannoncoding/wealthward/domain/F05.kt
+app/src/main/java/io/github/kannoncoding/wealthward/ui/MonthlySummary.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/WealthWardApp.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/F05Forms.kt
 app/src/main/java/io/github/kannoncoding/wealthward/ui/F05Import.kt
@@ -77,8 +91,16 @@ gradlew.bat
 settings.gradle.kts
 testing/check_public_files.py
 """.split())
-WRAPPER = "gradle/wrapper/gradle-wrapper.jar"
-WRAPPER_SHA256 = "497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7"
+BINARY_SHA256 = {
+    "app/src/main/res/drawable-nodpi/cat_launch_art.png":
+        "89e9cfcaad8cfb0b1e1fa4b6c12bc6892735e9d421dbb5464ebd1f44177b3a2f",
+    "app/src/main/res/drawable-nodpi/wealthward_logo.png":
+        "19f73e7a59543148c9e04b0090465f20e53150835570f8bc89d970fc56e97f90",
+    "app/src/main/res/font/inter_variable.ttf":
+        "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+    "gradle/wrapper/gradle-wrapper.jar":
+        "497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7",
+}
 
 
 def main():
@@ -94,9 +116,9 @@ def main():
             errors.append(f"Expected a regular file: {name}")
             continue
         data = path.read_bytes()
-        if name == WRAPPER:
-            if hashlib.sha256(data).hexdigest() != WRAPPER_SHA256:
-                errors.append("Gradle wrapper JAR checksum mismatch")
+        if name in BINARY_SHA256:
+            if hashlib.sha256(data).hexdigest() != BINARY_SHA256[name]:
+                errors.append(f"Binary checksum mismatch: {name}")
         else:
             try:
                 decoded = data.decode("utf-8")
@@ -107,7 +129,7 @@ def main():
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
-    print(f"PASS: {len(paths)} public paths match the reviewed allowlist; wrapper checksum matches.")
+    print(f"PASS: {len(paths)} public paths match the reviewed allowlist and binary checksums.")
     return 0
 
 

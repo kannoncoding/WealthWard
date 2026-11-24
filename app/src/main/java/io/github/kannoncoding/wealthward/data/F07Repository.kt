@@ -218,7 +218,9 @@ internal fun validateDebt(debt: Debt, accounts: List<AccountEntity>) {
     val open = LocalDate.parse(debt.openingDate)
     val due = LocalDate.parse(debt.firstDueDate)
     if (debt.id.isBlank() || debt.name.isBlank() || debt.group.isBlank() || debt.openingMinor <= 0 ||
-        debt.installmentMinor <= 0 || debt.remainingMonths !in 1..600 || debt.finalInstallmentMinor?.let { it <= 0 } == true ||
+        debt.installmentMinor <= 0 || debt.intervalMonths !in 1..12 ||
+        (debt.remainingMonths.toLong() - 1) * debt.intervalMonths > 1199 ||
+        (debt.intervalMonths != 1 && debt.amortization == DebtAmortization.FIXED_MONTHLY) || debt.remainingMonths !in 1..600 || debt.finalInstallmentMinor?.let { it <= 0 } == true ||
         (rate == null && debt.amortization == DebtAmortization.FIXED_MONTHLY) ||
         (rate != null && (rate.signum() < 0 || rate > BigDecimal("1000") || rate.scale() !in -3..12)) || due < open)
         f07Invalid("Enter valid term debt details")
@@ -233,7 +235,8 @@ internal fun validateDebtPayment(payment: DebtPayment, debt: Debt, remaining: Lo
         payment.totalMinor <= 0 || remaining == 0L || (payment.extra && payment.principalMinor <= 0) ||
         payment.actualNextInstallmentMinor?.let { !payment.extra || it <= 0 } == true ||
         payment.actualRemainingMonths?.let { !payment.extra || it !in 1..600 } == true ||
-        (nominal != null && ChronoUnit.MONTHS.between(first, nominal) !in 0..1199)) {
+        (nominal != null && (ChronoUnit.MONTHS.between(first, nominal) !in 0..1199 ||
+            ChronoUnit.MONTHS.between(first, nominal) % debt.intervalMonths != 0L))) {
         f07Invalid("Enter valid principal, interest and charges for an open term debt")
     }
 }

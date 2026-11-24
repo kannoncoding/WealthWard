@@ -44,6 +44,7 @@ internal fun JSONObject.debt() = Debt(
     int("remainingMonths"), f07Text("annualRatePercent"), f07OptionalLong("finalInstallmentMinor"),
     ExtraPaymentPolicy.valueOf(getString("extraPaymentPolicy")), f07Text("suggestedAccountId"),
     DebtAmortization.valueOf(getString("amortization")),
+    if (has("intervalMonths")) int("intervalMonths") else 1,
 )
 internal fun JSONObject.debtPayment() = DebtPayment(
     getString("id"), getString("debtId"), getString("accountId"), getString("date"), f07Text("installmentMonth"),

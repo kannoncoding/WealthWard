@@ -71,7 +71,7 @@ class F05UiTest {
   click("Guardar")
   ui.onNodeWithText("La suma del desglose", substring = true).assertExists()
   assertTrue(snapshot().operations.isEmpty())
-  click("Cancelar · conservar borrador")
+  click("Cancelar")
   open("expense")
   ui.onNodeWithContentDescription("Importe").assertTextContains("15000")
   ui.onNodeWithContentDescription("Importe del desglose 1").assertTextContains("14999")

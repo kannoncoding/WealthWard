@@ -50,14 +50,15 @@ private data class DebtTerms(val installment: Long, val remainingMonths: Int, va
 
 private fun debtTerms(debt: Debt, entries: List<DebtEntry>, month: YearMonth): DebtTerms {
     val first = YearMonth.from(LocalDate.parse(debt.firstDueDate))
-    val offset = ChronoUnit.MONTHS.between(first, month).coerceAtLeast(0)
+    val offset = ChronoUnit.MONTHS.between(first, month).coerceAtLeast(0) / debt.intervalMonths
     var end = debt.remainingMonths.toLong()
     var installment = debt.installmentMinor
     var changed = false
     val knownRate = debt.annualRatePercent.takeIf { debt.amortization == DebtAmortization.FIXED_MONTHLY }
     entries.filter { it.payment?.extra == true }.forEach { entry ->
         val payment = checkNotNull(entry.payment)
-        val nextOffset = (ChronoUnit.MONTHS.between(first, YearMonth.from(entry.date)) + 1).coerceAtLeast(0)
+        val elapsed = ChronoUnit.MONTHS.between(first, YearMonth.from(entry.date))
+        val nextOffset = if (elapsed < 0) 0L else elapsed / debt.intervalMonths + 1
         if (nextOffset > offset) return@forEach
         val remaining = (end - nextOffset).coerceAtLeast(1)
         installment = payment.actualNextInstallmentMinor ?: if (debt.extraPaymentPolicy == ExtraPaymentPolicy.REDUCE_INSTALLMENT && knownRate != null) {
@@ -110,7 +111,7 @@ internal fun commitmentInstallments(state: JSONObject, month: String): List<Plan
         val paid = entries.filter { it.payment?.installmentMonth != null }.groupBy { YearMonth.parse(it.payment!!.installmentMonth!!) }
         val last = maxOf(until, paid.keys.maxOrNull() ?: until)
         val limit = ChronoUnit.MONTHS.between(first, last).coerceAtMost(1199)
-        (0..limit).mapNotNull { index ->
+        (0..limit step debt.intervalMonths.toLong()).mapNotNull { index ->
             val nominal = first.plusMonths(index)
             val due = PlanningMath.due(nominal, firstDate.dayOfMonth)
             val paymentEntries = paid[nominal].orEmpty()
