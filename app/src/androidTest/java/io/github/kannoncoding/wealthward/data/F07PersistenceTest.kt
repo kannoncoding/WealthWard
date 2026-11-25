@@ -34,6 +34,95 @@ class F07PersistenceTest {
         } catch (_: DomainFailure) { }
     }
 
+    @Test fun mortgageMaturityKeepsTheExactDateAndEditsSurviveRestore() = runBlocking {
+        inDatabase { db ->
+            val finance = FinanceRepository(db)
+            val store = finance.commitments
+            val debt = Debt(
+                "mortgage", "Mortgage", "Fixed", Currency.CRC, DebtKind.MORTGAGE,
+                30_000, "2027-01-01", "2027-01-31", 10_000, 3,
+                maturityDate = "2027-04-17",
+            )
+            val create = F07Command.CreateDebt("create-mortgage", debt)
+            store.execute(create)
+            assertEquals("2027-04-17", store.snapshot("2027-04").debts.single().debt.maturityDate)
+            assertEquals(3, store.snapshot("2027-04").installments.size)
+            val edit = F07Command.UpdateDebtMaturity("change-maturity", debt.id, "2027-06-19")
+            store.execute(edit)
+            assertEquals(edit.requestId, store.execute(edit))
+            val saved = store.snapshot("2027-06")
+            assertEquals("2027-06-19", saved.debts.single().debt.maturityDate)
+            assertEquals(5, saved.installments.size)
+            assertEquals(debt.openingMinor, saved.debts.single().principalMinor)
+            inDatabase { restored ->
+                val copy = FinanceRepository(restored)
+                copy.restoreFixture(finance.exportFixture())
+                assertEquals(saved, copy.commitments.snapshot("2027-06"))
+                assertEquals(create.requestId, copy.commitments.execute(create))
+                assertEquals(edit.requestId, copy.commitments.execute(edit))
+            }
+        }
+    }
+
+    @Test fun mortgageEstimatesHandleCommaRateAndRecurringCharges() = runBlocking {
+        inDatabase { db ->
+            val store = FinanceRepository(db).commitments
+            val rate = normalizedDebtRate("12,0")
+            assertEquals("12.0", rate?.toPlainString())
+            assertEquals(28_822L, debtPrincipalFromPayments(9_800, 9_800, 3, rate))
+            val estimate = checkNotNull(debtPayoff(25_000, 9_800, rate, 600))
+            assertEquals(3, estimate.installments)
+            val debt = Debt(
+                "estimated", "Mortgage", "Fixed", Currency.CRC, DebtKind.MORTGAGE,
+                25_000, "2027-01-01", "2027-01-31", 10_000, estimate.installments,
+                annualRatePercent = "12,0", amortization = DebtAmortization.FIXED_MONTHLY,
+                estimateTermFromBalance = true, installmentChargesMinor = 200,
+            )
+            store.execute(F07Command.CreateDebt("estimated-mortgage", debt))
+            val saved = store.snapshot("2027-04")
+            assertEquals(3, saved.debts.single().projectedRemainingMonths)
+            assertEquals(estimate.finalPaymentMinor + 200, saved.installments.last().pendingMinor)
+            try {
+                store.execute(F07Command.CreateDebt("interest-only-mortgage",
+                    debt.copy(id = "interest-only", installmentMinor = 450)))
+                fail("Expected a payment and rate conflict")
+            } catch (error: DomainFailure.Invalid) {
+                assertEquals(DEBT_PAYMENT_INTEREST, error.message)
+            }
+        }
+    }
+
+    @Test fun remainingMortgageInstallmentsFollowTheirNominalMonthAndPaymentStatus() = runBlocking {
+        inDatabase { db ->
+            val finance = FinanceRepository(db)
+            finance.cash("cash", 100_000)
+            val store = finance.commitments
+            val debt = Debt(
+                "mortgage-progress", "Mortgage", "Fixed", Currency.CRC, DebtKind.MORTGAGE,
+                30_000, "2027-01-01", "2027-01-15", 10_000, 3, estimateTermFromBalance = true,
+            )
+            store.execute(F07Command.CreateDebt("create-progress-mortgage", debt))
+            suspend fun pay(id: String, date: String, month: String, principal: Long) {
+                store.execute(F07Command.PayDebt(id, DebtPayment(id, debt.id, "cash", date, month, principal, 0, 0)))
+            }
+            suspend fun checkPending(vararg months: String) {
+                val snapshot = store.snapshot("2027-03")
+                assertEquals(months.toList(), snapshot.installments.filter { it.pendingMinor > 0 }.map { it.nominalMonth })
+                assertEquals(months.size, snapshot.debts.single().projectedRemainingMonths)
+                assertEquals(months.lastOrNull()?.let { "$it-15" }, snapshot.debts.single().projectedPayoffDate)
+            }
+            checkPending("2027-01", "2027-02", "2027-03")
+            pay("early-feb-part", "2027-01-10", "2027-02", 4_000)
+            checkPending("2027-01", "2027-02", "2027-03")
+            pay("early-feb-rest", "2027-01-12", "2027-02", 6_000)
+            checkPending("2027-01", "2027-03")
+            pay("late-jan", "2027-02-15", "2027-01", 10_000)
+            checkPending("2027-03")
+            pay("on-time-mar", "2027-03-15", "2027-03", 10_000)
+            checkPending()
+        }
+    }
+
     @Test fun t08DebtPaymentPostsComponentsOnceClosesAndRestores() = runBlocking {
         inDatabase { db ->
             val finance = FinanceRepository(db)

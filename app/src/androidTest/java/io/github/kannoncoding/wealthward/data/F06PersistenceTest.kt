@@ -65,6 +65,50 @@ class F06PersistenceTest {
   } finally { db.close() }
  }
 
+ @Test fun datedSalaryOccurrencesAndRecurringIncomePreserveManualReceipts(): Unit = runBlocking {
+  val db = database()
+  try {
+   val repo = FinanceRepository(db)
+   repo.workspace.cash(amount = 1_000)
+   val today = java.time.LocalDate.now(BusinessTime.zone)
+   val month = java.time.YearMonth.from(today)
+   val prior = month.minusMonths(1)
+   val next = month.plusMonths(1)
+   val anchor = prior.atEndOfMonth()
+   repo.planning.execute(F06Command.SaveSalary("save-weekly",
+    SalaryVersion("weekly",prior.toString(),500,Currency.CRC,"cash",
+     frequency = IncomeFrequency.WEEKLY,anchorDate = anchor.toString())))
+   repo.planning.execute(F06Command.OpenPeriod("open-prior",prior.toString()))
+   repo.planning.execute(F06Command.OpenPeriod("open-next",next.toString()))
+   val salaries = repo.planning.snapshot().occurrences.filter { it.templateId == "salary" }
+   val due = salaries.first { it.dueDate == anchor.toString() }
+   assertTrue(salaries.count { it.nominalMonth == month.toString() } >= 4)
+   assertEquals(salaries.size,salaries.map { it.id }.distinct().size)
+   assertTrue(repo.workspace.snapshot().operations.isEmpty())
+   repeat(2) { repo.planning.confirmSalary(due.id,"cash",500) }
+
+   val extra = ExtraIncomeVersion("consulting",1,"Consulting",today.toString(),today.toString(),
+    IncomeFrequency.EVERY_14_DAYS,300,Currency.CRC,"cash")
+   repo.planning.execute(F06Command.SaveExtraIncome("new-extra",extra))
+   val occurrence = repo.planning.snapshot().occurrences.first { it.templateId == "recurring-extra:consulting" && it.dueDate == today.toString() }
+   assertEquals(1_500L,repo.workspace.snapshot().accounts.single().balanceMinor)
+   val receipt = F06Command.Pay("received-extra",occurrence.id,"cash",300,today.toString())
+   repeat(2) { repo.planning.execute(receipt) }
+   repo.planning.execute(F06Command.SaveExtraIncome("edit-extra",extra.copy(version=2,expectedMinor=400)))
+   val edited = repo.planning.snapshot().occurrences.filter { it.templateId == occurrence.templateId && it.dueDate > today.toString() }
+   assertTrue(edited.isNotEmpty())
+   assertTrue(edited.all { it.expectedMinor == 400L })
+   repo.planning.execute(F06Command.SaveExtraIncome("pause-extra",extra.copy(version=3,expectedMinor=400,paused=true)))
+   fails { repo.planning.execute(receipt.copy(requestId="stale-extra",occurrenceId=edited.first().id)) }
+   repo.restoreFixture(repo.exportFixture())
+   val history = repo.planning.snapshot().occurrences.single { it.templateId == occurrence.templateId }
+   assertEquals(occurrence.id,history.id)
+   assertEquals(300L,history.paidMinor)
+   assertEquals(300L,history.expectedMinor)
+   assertEquals(1_800L,repo.workspace.snapshot().accounts.single().balanceMinor)
+  } finally { db.close() }
+ }
+
  @Test fun multipleReminderLeadsSurviveExportAndRestore(): Unit = runBlocking {
   val db = database()
   try {

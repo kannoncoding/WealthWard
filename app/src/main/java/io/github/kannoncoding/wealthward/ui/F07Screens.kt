@@ -31,6 +31,19 @@ internal fun creditEvidenceName(kind: CreditEvidenceKind) = when (kind) {
  CreditEvidenceKind.PAYMENT -> localized("Pago de tarjeta")
 }
 
+internal fun debtOpeningAssumption(amortization: DebtAmortization): String =
+ if (amortization == DebtAmortization.FIXED_MONTHLY)
+  localized("El saldo se estima con la tasa fija mensual. Si faltan cargos, se suponen cero.")
+ else localized("Con seguimiento manual, el saldo se estima sin intereses. Si faltan cargos, se suponen cero.")
+
+internal fun debtEstimateExplanation(mode: String, amortization: DebtAmortization): String? = when {
+ mode == "DATE" -> localized("El plazo estimado cuenta las cuotas según la frecuencia hasta la fecha de fin indicada.")
+ mode == "BALANCE" && amortization == DebtAmortization.FIXED_MONTHLY ->
+  localized("El plazo estimado usa la tasa fija mensual y descuenta los cargos indicados de cada cuota. Si faltan cargos, se suponen cero.")
+ mode == "BALANCE" -> localized("La estimación descuenta los cargos indicados y supone que el resto de cada cuota reduce el principal, sin intereses.")
+ else -> null
+}
+
 @Composable internal fun TermDebtCards(plan: F07Snapshot, ledger: F05Snapshot, open: (String, String) -> Unit) {
  Text(localized("Deudas a plazo"), style = MaterialTheme.typography.titleLarge)
  Action(localized("Crear deuda a plazo")) { open("f07debt", "") }
@@ -40,7 +53,10 @@ internal fun creditEvidenceName(kind: CreditEvidenceKind) = when (kind) {
   InfoCard(debt.name, buildString {
    appendLine("${debt.group} · ${debtKindName(debt.kind)}")
    appendLine(localized("Principal registrado {0}", money(status.principalMinor, debt.currency)))
-   appendLine(localized("Apertura {0} · {1}", debt.openingDate, money(debt.openingMinor, debt.currency)))
+   val opening = money(debt.openingMinor, debt.currency)
+   appendLine(if (debt.estimatedOpeningPrincipal) localized("Apertura estimada {0} · {1}", debt.openingDate, opening)
+    else localized("Apertura {0} · {1}", debt.openingDate, opening))
+   debt.maturityDate?.let { appendLine(localized("Fecha de fin registrada {0}", it)) }
    if (status.principalMinor == 0L) appendLine(localized("Deuda liquidada"))
    else {
     appendLine(localized("Primera cuota {0} · cada {1} mes(es) · cuota inicial {2}", debt.firstDueDate, debt.intervalMonths, money(debt.installmentMinor, debt.currency)))
@@ -48,6 +64,17 @@ internal fun creditEvidenceName(kind: CreditEvidenceKind) = when (kind) {
     appendLine(if (debt.amortization == DebtAmortization.FIXED_MONTHLY) localized("Amortización mensual a tasa fija") else localized("Seguimiento manual"))
     if (status.estimated) appendLine(localized("Proyección estimada. Confirma las condiciones con el acreedor."))
     status.projectedInstallmentMinor?.let { appendLine(localized("Cuota proyectada {0}", money(it, debt.currency))) }
+    val mode = when {
+     debt.maturityDate != null -> "DATE"
+     debt.estimateTermFromBalance -> "BALANCE"
+     else -> "COUNT"
+    }
+    debtEstimateExplanation(mode, debt.amortization)?.let { appendLine(it) }
+    if (debt.estimatedOpeningPrincipal) appendLine(debtOpeningAssumption(debt.amortization))
+    debt.installmentChargesMinor?.let { appendLine(localized("Cargos por cuota {0}", money(it, debt.currency))) }
+    if (debt.estimateTermFromBalance) status.projectedPayoffDate?.let {
+     appendLine(localized("Fecha de cancelación estimada {0}", it))
+    }
     status.projectedRemainingMonths?.let { appendLine(localized("Plazo restante proyectado {0} cuotas", it)) }
     debt.finalInstallmentMinor?.let { appendLine(localized("Última cuota configurada {0}", money(it, debt.currency))) }
    }
@@ -55,6 +82,9 @@ internal fun creditEvidenceName(kind: CreditEvidenceKind) = when (kind) {
     append(localized("Principal informado por el acreedor: {0} · {1}\n{2}", money(it.principalMinor, debt.currency), it.date, it.reference))
    } ?: append(localized("Sin verificación del acreedor"))
   }, 1)
+  if (debt.kind == DebtKind.MORTGAGE || debt.maturityDate != null) {
+   Action(localized("Editar vencimiento · {0}", debt.name)) { open("f07maturity", debt.id) }
+  }
   Action(localized("Verificar saldo · {0}", debt.name)) { open("f07verify", debt.id) }
   if (status.principalMinor > 0) Action(localized("Registrar abono extraordinario · {0}", debt.name)) { open("f07extra", debt.id) }
   status.payments.forEach { payment ->

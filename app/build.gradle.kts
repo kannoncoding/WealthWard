@@ -6,8 +6,8 @@ android {
   applicationId = "io.github.kannoncoding.wealthward"
   minSdk = 26
   targetSdk = 37
-  versionCode = 9
-  versionName = "1.2"
+  versionCode = 10
+  versionName = "1.3"
   testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
  }
  buildTypes { debug { applicationIdSuffix = ".dev"; versionNameSuffix = "-dev" }; release { isMinifyEnabled = false } }

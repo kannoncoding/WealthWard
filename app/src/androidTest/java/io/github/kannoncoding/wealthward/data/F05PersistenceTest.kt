@@ -17,6 +17,17 @@ class F05PersistenceTest {
  private fun database() = Room.inMemoryDatabaseBuilder(context,WealthDatabase::class.java).build()
  private suspend fun F05Repository.cash(id:String="a",amount:Long=50000000,currency:Currency=Currency.CRC,kind:String="CASH",product:String=id) = execute(F05Command.CreateAccount("create:$id",id,product,"Account $id",currency,kind,amount,"2026-01-01"))
  private suspend fun fails(block:suspend ()->Unit) { try { block(); fail("Invalid command must fail") } catch (_:DomainFailure) {} }
+ @Test fun bankProductRejectsDuplicateCurrencyAndMixedAccountKinds(): Unit = runBlocking {
+  val db = database()
+  try {
+   val repo = F05Repository(db)
+   repo.cash(product = "bank")
+   fails { repo.cash(id = "duplicate", product = "bank") }
+   fails { repo.cash(id = "credit", currency = Currency.USD, kind = "LIABILITY", product = "bank") }
+   repo.cash(id = "usd", currency = Currency.USD, product = "bank")
+   assertEquals(setOf("a", "usd"), repo.snapshot().accounts.map { it.id }.toSet())
+  } finally { db.close() }
+ }
  @Test fun cashSubtypeEditsAndRestoreKeepProductAndHistory(): Unit = runBlocking {
   val db = database()
   try {

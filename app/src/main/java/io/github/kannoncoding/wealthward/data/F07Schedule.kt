@@ -33,16 +33,25 @@ internal fun debtStatus(debt: Debt, entries: List<DebtEntry>): DebtStatus {
     val latest = active.lastOrNull()
     val payment = active.mapNotNull { it.payment }.lastOrNull()
     val firstMonth = YearMonth.from(LocalDate.parse(debt.firstDueDate))
-    val nextMonth = if (latest?.payment?.extra == true) YearMonth.from(latest.date).plusMonths(1) else latest?.date?.let(YearMonth::from)
-    val remaining = debtTerms(debt, active, maxOf(firstMonth, nextMonth ?: firstMonth))
+    val pending = if (principal == 0L) emptyList() else {
+        val initialLast = firstMonth.plusMonths((debt.remainingMonths - 1L) * debt.intervalMonths)
+        val last = active.fold(initialLast) { end, entry ->
+            val extra = entry.payment?.takeIf { it.extra } ?: return@fold end
+            val newTerm = extra.actualRemainingMonths ?: if (debt.extraPaymentPolicy == ExtraPaymentPolicy.REDUCE_TERM &&
+                debt.amortization == DebtAmortization.FIXED_MONTHLY) 1 else return@fold end
+            maxOf(end, YearMonth.from(entry.date).plusMonths(newTerm.toLong() * debt.intervalMonths))
+        }
+        debtInstallments(debt, active, last, LocalDate.now(BusinessTime.zone)).filter { it.pendingMinor > 0 }
+    }
     return DebtStatus(
         debt, principal, active.lastOrNull { it.verification != null }?.verification,
         principal > 0 && (latest?.verification == null || debt.amortization == DebtAmortization.MANUAL ||
             (payment?.extra == true && debt.extraPaymentPolicy != ExtraPaymentPolicy.MANUAL &&
                 payment.actualNextInstallmentMinor == null && payment.actualRemainingMonths == null)),
         active.mapNotNull { it.payment },
-        if (principal == 0L) 0L else remaining.installment,
-        if (principal == 0L) 0 else remaining.remainingMonths,
+        pending.firstOrNull()?.expectedMinor ?: 0L,
+        pending.size,
+        pending.lastOrNull()?.dueDate,
     )
 }
 
@@ -55,6 +64,7 @@ private fun debtTerms(debt: Debt, entries: List<DebtEntry>, month: YearMonth): D
     var installment = debt.installmentMinor
     var changed = false
     val knownRate = debt.annualRatePercent.takeIf { debt.amortization == DebtAmortization.FIXED_MONTHLY }
+    val charges = debt.installmentChargesMinor ?: 0
     entries.filter { it.payment?.extra == true }.forEach { entry ->
         val payment = checkNotNull(entry.payment)
         val elapsed = ChronoUnit.MONTHS.between(first, YearMonth.from(entry.date))
@@ -62,10 +72,10 @@ private fun debtTerms(debt: Debt, entries: List<DebtEntry>, month: YearMonth): D
         if (nextOffset > offset) return@forEach
         val remaining = (end - nextOffset).coerceAtLeast(1)
         installment = payment.actualNextInstallmentMinor ?: if (debt.extraPaymentPolicy == ExtraPaymentPolicy.REDUCE_INSTALLMENT && knownRate != null) {
-            estimatedInstallment(entry.resultingPrincipal, remaining, knownRate)
+            Math.addExact(estimatedInstallment(entry.resultingPrincipal, remaining, knownRate), charges)
         } else installment
         val newRemaining = payment.actualRemainingMonths?.toLong() ?: if (debt.extraPaymentPolicy == ExtraPaymentPolicy.REDUCE_TERM && knownRate != null) {
-            estimatedTerm(entry.resultingPrincipal, installment, remaining, knownRate)
+            estimatedTerm(entry.resultingPrincipal, installment - charges, remaining, knownRate)
         } else remaining
         if (payment.actualRemainingMonths != null || (debt.extraPaymentPolicy == ExtraPaymentPolicy.REDUCE_TERM && knownRate != null)) end = nextOffset + newRemaining
         changed = changed || payment.actualNextInstallmentMinor != null || payment.actualRemainingMonths != null ||
@@ -75,11 +85,11 @@ private fun debtTerms(debt: Debt, entries: List<DebtEntry>, month: YearMonth): D
 }
 
 private fun monthlyInterest(principal: Long, annualRatePercent: String): Long =
-    BigDecimal.valueOf(principal).multiply(BigDecimal(annualRatePercent)).divide(BigDecimal("1200"), 0, RoundingMode.HALF_UP).longValueExact()
+    debtMonthInterest(principal, checkNotNull(normalizedDebtRate(annualRatePercent))).longValueExact()
 
 private fun estimatedInstallment(principal: Long, months: Long, annualRatePercent: String): Long {
     if (principal == 0L) return 0
-    val rate = BigDecimal(annualRatePercent).divide(BigDecimal("1200"), 20, RoundingMode.HALF_UP)
+    val rate = checkNotNull(normalizedDebtRate(annualRatePercent)).divide(BigDecimal("1200"), 20, RoundingMode.HALF_UP)
     val base = BigDecimal.valueOf(principal)
     val payment = if (rate.signum() == 0) base.divide(BigDecimal.valueOf(months), 0, RoundingMode.CEILING) else {
         val discount = BigDecimal.ONE.divide(BigDecimal.ONE.add(rate).pow(Math.toIntExact(months)), 20, RoundingMode.HALF_UP)
@@ -104,40 +114,54 @@ internal fun commitmentInstallments(state: JSONObject, month: String): List<Plan
     val until = YearMonth.parse(month)
     val today = LocalDate.now(BusinessTime.zone)
     return data.f07Rows("debts").flatMap { row ->
-        val debt = row.debt()
+        val debt = data.debtWithMaturity(row)
         val entries = data.debtEntries(debt.id).filterNot { it.voided }
-        val firstDate = LocalDate.parse(debt.firstDueDate)
-        val first = YearMonth.from(firstDate)
-        val paid = entries.filter { it.payment?.installmentMonth != null }.groupBy { YearMonth.parse(it.payment!!.installmentMonth!!) }
-        val last = maxOf(until, paid.keys.maxOrNull() ?: until)
-        val limit = ChronoUnit.MONTHS.between(first, last).coerceAtMost(1199)
-        (0..limit step debt.intervalMonths.toLong()).mapNotNull { index ->
-            val nominal = first.plusMonths(index)
-            val due = PlanningMath.due(nominal, firstDate.dayOfMonth)
-            val paymentEntries = paid[nominal].orEmpty()
-            val beforeMonth = entries.filter { YearMonth.from(it.date) < nominal }
-            val balance = beforeMonth.lastOrNull()?.resultingPrincipal ?: debt.openingMinor
-            val terms = debtTerms(debt, beforeMonth, nominal)
-            val totalPaid = f07Sum(paymentEntries.map { it.payment!!.totalMinor })
-            val closed = (entries.lastOrNull()?.resultingPrincipal ?: debt.openingMinor) == 0L
-            if (totalPaid == 0L && (terms.remainingMonths == 0 || balance == 0L || closed)) return@mapNotNull null
-            val planned = when {
-                terms.remainingMonths == 1 && !terms.changed && debt.finalInstallmentMinor != null -> debt.finalInstallmentMinor
-                terms.remainingMonths == 1 && debt.amortization == DebtAmortization.FIXED_MONTHLY -> {
-                    val payoff = Math.addExact(balance, monthlyInterest(balance, checkNotNull(debt.annualRatePercent)))
-                    if (terms.changed) minOf(payoff, terms.installment) else payoff
-                }
-                else -> terms.installment
+        debtInstallments(debt, entries, until, today)
+    }
+}
+
+private fun debtInstallments(
+    debt: Debt, entries: List<DebtEntry>, until: YearMonth, today: LocalDate,
+): List<PlannedOccurrence> {
+    val firstDate = LocalDate.parse(debt.firstDueDate)
+    val first = YearMonth.from(firstDate)
+    val paid = entries.filter { it.payment?.installmentMonth != null }.groupBy { YearMonth.parse(it.payment!!.installmentMonth!!) }
+    val last = maxOf(until, paid.keys.maxOrNull() ?: until)
+    val limit = ChronoUnit.MONTHS.between(first, last).coerceAtMost(1199)
+    return (0..limit step debt.intervalMonths.toLong()).mapNotNull { index ->
+        val nominal = first.plusMonths(index)
+        val due = PlanningMath.due(nominal, firstDate.dayOfMonth)
+        val paymentEntries = paid[nominal].orEmpty()
+        val beforeMonth = entries.filter { YearMonth.from(it.date) < nominal }
+        val balance = beforeMonth.lastOrNull()?.resultingPrincipal ?: debt.openingMinor
+        val terms = debtTerms(debt, beforeMonth, nominal)
+        val totalPaid = f07Sum(paymentEntries.map { it.payment!!.totalMinor })
+        val closed = (entries.lastOrNull()?.resultingPrincipal ?: debt.openingMinor) == 0L
+        if (totalPaid == 0L && (terms.remainingMonths == 0 || balance == 0L || closed)) return@mapNotNull null
+        val charges = debt.installmentChargesMinor ?: 0
+        val planned = when {
+            terms.remainingMonths == 1 && !terms.changed && debt.finalInstallmentMinor != null -> debt.finalInstallmentMinor
+            terms.remainingMonths == 1 && !terms.changed && debt.estimateTermFromBalance -> {
+                val rate = debt.annualRatePercent?.let(::normalizedDebtRate)
+                    .takeIf { debt.amortization == DebtAmortization.FIXED_MONTHLY }
+                val payoff = debtPayoff(debt.openingMinor, debt.installmentMinor - charges, rate, debt.remainingMonths)
+                if (payoff == null) terms.installment else Math.addExact(payoff.finalPaymentMinor, charges)
             }
-            val expected = if (closed) totalPaid else maxOf(planned, totalPaid)
-            val pending = expected - totalPaid
-            PlannedOccurrence(
-                "${debtAccount(debt.id)}:$nominal:0", debtAccount(debt.id), 1, nominal.toString(), 0,
-                debt.name, debt.group, PlanNature.DEBT, debt.currency, due.toString(), expected, null,
-                totalPaid, pending, debt.suggestedAccountId, null, pending > 0 && due < today,
-                paymentEntries.map { it.raw.getString("operationId") }, nominal.toString(), totalPaid,
-            )
+            terms.remainingMonths == 1 && !terms.changed && debt.maturityDate != null -> terms.installment
+            terms.remainingMonths == 1 && debt.amortization == DebtAmortization.FIXED_MONTHLY -> {
+                val payoff = f07Sum(listOf(balance, monthlyInterest(balance, checkNotNull(debt.annualRatePercent)), charges))
+                if (terms.changed) minOf(payoff, terms.installment) else payoff
+            }
+            else -> terms.installment
         }
+        val expected = if (closed) totalPaid else maxOf(planned, totalPaid)
+        val pending = expected - totalPaid
+        PlannedOccurrence(
+            "${debtAccount(debt.id)}:$nominal:0", debtAccount(debt.id), 1, nominal.toString(), 0,
+            debt.name, debt.group, PlanNature.DEBT, debt.currency, due.toString(), expected, null,
+            totalPaid, pending, debt.suggestedAccountId, null, pending > 0 && due < today,
+            paymentEntries.map { it.raw.getString("operationId") }, nominal.toString(), totalPaid,
+        )
     }
 }
 

@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.MaterialTheme
@@ -90,7 +91,9 @@ internal fun LanguageSettings(context: Context) {
             val selected = language == AppLanguage.current
             Row(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                    .selectable(selected, role = Role.RadioButton, onClick = { AppLanguage.select(context, language) }),
+                    .actionSurface(selected = selected)
+                    .selectable(selected, role = Role.RadioButton, onClick = { AppLanguage.select(context, language) })
+                    .padding(horizontal = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {

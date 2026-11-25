@@ -19,7 +19,7 @@ import java.math.BigDecimal
 internal fun natureName(value: PlanNature) = when(value) {
  PlanNature.INCOME -> localized("Ingresos"); PlanNature.FIXED -> localized("Gastos fijos"); PlanNature.SUBSCRIPTION -> localized("Suscripciones / apps"); PlanNature.VARIABLE_NEED -> localized("Necesidades variables"); PlanNature.FREE -> localized("Gasto libre"); PlanNature.SAVING -> localized("Ahorro financiado"); PlanNature.DEBT -> localized("Deudas"); PlanNature.TARGET -> localized("Meta Sobrante")
 }
-internal fun f06Title(action:String) = mapOf("f06salary" to localized("Configurar ingreso neto"), "f06extra" to localized("Ingreso extraordinario esperado"), "f06template" to localized("Obligación recurrente"), "f06budget" to localized("Presupuesto por periodo"), "f06target" to localized("Meta Sobrante"), "f06pay" to localized("Confirmar pago o ingreso real"), "f06confirm" to localized("Confirmar importe real"), "f06fund" to localized("Financiar reserva anual"), "f06purpose" to localized("Aportar a reserva anual"), "f06financing" to localized("Periodo de financiación"), "f06copy" to localized("Preparar otro periodo"), "f06reminders" to localized("Recordatorios locales"), "f06link" to localized("Vincular movimiento existente"))[action] ?: action
+internal fun f06Title(action:String) = mapOf("f06salary" to localized("Configurar ingreso neto"), "f06extra" to localized("Ingreso extraordinario esperado"), "f06template" to localized("Obligación recurrente"), "f06budget" to localized("Presupuesto por periodo"), "f06target" to localized("Meta Sobrante"), "f06pay" to localized("Confirmar pago o ingreso real"), "f06confirm" to localized("Confirmar Monto/Importe real"), "f06fund" to localized("Financiar reserva anual"), "f06purpose" to localized("Aportar a reserva anual"), "f06financing" to localized("Periodo de financiación"), "f06copy" to localized("Preparar otro periodo"), "f06reminders" to localized("Recordatorios locales"), "f06link" to localized("Vincular movimiento existente"))[action] ?: action
 
 @Composable internal fun PlanningDashboard(month:String, changeMonth:(String)->Unit, plan:F06Snapshot, ledger:F05Snapshot, open:(String,String)->Unit, execute:(F06Command)->Unit, projection: @Composable () -> Unit = {}) {
  var monthDraft by androidx.compose.runtime.saveable.rememberSaveable(month) { mutableStateOf(month) }
@@ -68,13 +68,13 @@ internal fun f06Title(action:String) = mapOf("f06salary" to localized("Configura
   val account=ledger.accounts.find { it.id==occurrence.suggestedAccountId }
   val termDebt = occurrence.templateId.startsWith("term-debt:")
   val applied = if(termDebt) localized("Aplicado a cuota") else localized("Consumo vinculado")
-  InfoCard("${occurrence.dueDate} · ${occurrence.displayName()}", localized("{0} · {1}\nCuenta sugerida: {2}\nEstimado {3}\nConfirmado {4}\nReal pagado {5}\n{6} {7}\nTu pendiente {8} · {9}", natureName(occurrence.nature), if (occurrence.templateId == "salary") localized("Ingresos") else occurrence.group, account?.name ?: localized("Sin elegir"), money(occurrence.expectedMinor,occurrence.currency), occurrence.confirmedMinor?.let { money(it,occurrence.currency) } ?: localized("Por confirmar"), money(occurrence.cashPaidMinor,occurrence.currency), applied, money(occurrence.paidMinor,occurrence.currency), money(occurrence.pendingMinor,occurrence.currency), if(occurrence.pendingMinor==0L && occurrence.paidMinor==0L) localized("Sin saldo pendiente") else if(occurrence.pendingMinor==0L) if(occurrence.nature==PlanNature.INCOME) localized("Recibido") else localized("Pagado") else if(occurrence.overdue) localized("Vencido") else if(occurrence.paidMinor>0) localized("Parcial") else localized("Pendiente")), if(occurrence.overdue) 1 else 3)
+  InfoCard("${occurrence.dueDate} · ${occurrence.displayName()}", localized("{0} · {1}\nCuenta sugerida: {2}\nEstimado {3}\nConfirmado {4}\nReal pagado {5}\n{6} {7}\nTu pendiente {8} · {9}", natureName(occurrence.nature), if (occurrence.nature == PlanNature.INCOME) localized("Ingresos") else occurrence.group, account?.name ?: localized("Sin elegir"), money(occurrence.expectedMinor,occurrence.currency), occurrence.confirmedMinor?.let { money(it,occurrence.currency) } ?: localized("Por confirmar"), money(occurrence.cashPaidMinor,occurrence.currency), applied, money(occurrence.paidMinor,occurrence.currency), money(occurrence.pendingMinor,occurrence.currency), if(occurrence.pendingMinor==0L && occurrence.paidMinor==0L) localized("Sin saldo pendiente") else if(occurrence.pendingMinor==0L) if(occurrence.nature==PlanNature.INCOME) localized("Recibido") else localized("Pagado") else if(occurrence.overdue) localized("Vencido") else if(occurrence.paidMinor>0) localized("Parcial") else localized("Pendiente")), if(occurrence.overdue) 1 else 3)
   if(occurrence.paymentPendingMinor>0) {
    if(termDebt) {
     Action(localized("Pagar cuota · {0}", occurrence.displayName())) { open("f07installment", "${occurrence.nominalMonth}/${occurrence.templateId.removePrefix("term-debt:")}") }
    } else {
    Action(if(occurrence.nature==PlanNature.INCOME) localized("Registrar recepción · {0}", occurrence.displayName()) else localized("Pagar · {0}", occurrence.displayName())) { open("f06pay",occurrence.id) }
-   Action(localized("Confirmar importe · {0}", occurrence.displayName())) { open("f06confirm",occurrence.id) }
+   Action(localized("Confirmar Monto/Importe · {0}", occurrence.displayName())) { open("f06confirm",occurrence.id) }
    Action(localized("Vincular movimiento · {0}", occurrence.displayName())) { open("f06link",occurrence.id) }
   Action(localized("Cambiar periodo de financiación · {0}", occurrence.displayName())) { open("f06financing",occurrence.id) }
    if(occurrence.purposeId!=null) Action(localized("Financiar reserva · {0}", occurrence.displayName())) { open("f06fund",occurrence.id) }
@@ -96,6 +96,12 @@ private val configSections get() = linkedMapOf(
 internal fun configurationTitle(screen: String) =
  if (screen == "sectionLanguage") "Idioma / Language" else configSections[screen].orEmpty()
 
+private fun IncomeFrequency.incomeLabel() = when (this) {
+ IncomeFrequency.MONTHLY -> localized("Mensual")
+ IncomeFrequency.WEEKLY -> localized("Semanal")
+ IncomeFrequency.EVERY_14_DAYS -> localized("Quincenal (cada 14 días)")
+}
+
 @Composable internal fun ConfigurationMenu(open: (String,String) -> Unit) {
  configSections.forEach { (id,label) -> Action(label, menu = true) { open(id, "") } }
 }
@@ -106,7 +112,14 @@ internal fun configurationTitle(screen: String) =
    Action(localized("Configurar salario neto")) { open("f06salary", "") }
    Action(localized("Crear ingreso extraordinario")) { open("f06extra", "") }
    plan.salaries.sortedByDescending { it.effectiveMonth }.forEach {
-    InfoCard(localized("Salario neto · {0}", it.effectiveMonth), money(it.netMinor,it.currency), 0)
+    InfoCard(localized("Salario neto · {0}", it.effectiveMonth),
+     "${money(it.netMinor,it.currency)} · ${it.frequency.incomeLabel()}", 0)
+   }
+   plan.extraIncomes.groupBy { it.id }.values.forEach { versions ->
+    val income = versions.maxBy { it.version }
+    val status = if (income.paused) localized("Pausada") else localized("Activa")
+    InfoCard(income.name,"${money(income.expectedMinor,income.currency)} · ${income.frequency.incomeLabel()} · $status",0)
+    Action(localized("Editar ingreso recurrente · {0}",income.name)) { open("f06extra",income.id) }
    }
    PendingPayments(plan.occurrences.filter { it.nature==PlanNature.INCOME }, open)
   }
@@ -120,7 +133,7 @@ internal fun configurationTitle(screen: String) =
   var showHistory by remember(item.id) { mutableStateOf(false) }
   Action(localized("Historial de revisiones · {0}", item.name)) { showHistory=!showHistory }
   if(showHistory) versions.sortedBy { it.version }.forEach { revision ->
-   InfoCard(localized("Versión {0} · desde {1}", revision.version, revision.effectiveMonth), localized("{0} · {1}\nGrupo {2} · {3}\nDías nominales {4}{5}\n{6} · {7}\nMotivo: {8}", revision.name, money(revision.minor,revision.currency), revision.group, natureName(revision.nature), revision.day, if(revision.frequency==Recurrence.TWO_SLOTS) localized(" y {0}", revision.secondDay) else "", revision.frequency, if(revision.cancelled) localized("Cancelada") else if(revision.paused) localized("Pausada") else localized("Activa"), revision.reason) + if(revision.householdTotalMinor!=null) localized("\nTotal hogar {0} · mi porcentaje {1}", money(revision.householdTotalMinor,revision.currency), revision.ownPercent ?: localized("Importe fijo")) else "",4)
+   InfoCard(localized("Versión {0} · desde {1}", revision.version, revision.effectiveMonth), localized("{0} · {1}\nGrupo {2} · {3}\nDías nominales {4}{5}\n{6} · {7}\nMotivo: {8}", revision.name, money(revision.minor,revision.currency), revision.group, natureName(revision.nature), revision.day, if(revision.frequency==Recurrence.TWO_SLOTS) localized(" y {0}", revision.secondDay) else "", revision.frequency, if(revision.cancelled) localized("Cancelada") else if(revision.paused) localized("Pausada") else localized("Activa"), revision.reason) + if(revision.householdTotalMinor!=null) localized("\nTotal hogar {0} · mi porcentaje {1}", money(revision.householdTotalMinor,revision.currency), revision.ownPercent ?: localized("Monto/Importe fijo")) else "",4)
   }
  }
    PendingPayments(plan.occurrences.filter { it.nature in setOf(PlanNature.FIXED,PlanNature.SUBSCRIPTION) }, open)
@@ -147,7 +160,7 @@ internal fun configurationTitle(screen: String) =
     open("f07installment", "${item.nominalMonth}/${item.templateId.removePrefix("term-debt:")}")
    } else {
     Action(if(item.nature == PlanNature.INCOME) localized("Registrar recepción · {0}", item.displayName()) else localized("Registrar pago · {0}", item.displayName())) { open("f06pay",item.id) }
-    Action(localized("Confirmar importe · {0}", item.displayName())) { open("f06confirm",item.id) }
+    Action(localized("Confirmar Monto/Importe · {0}", item.displayName())) { open("f06confirm",item.id) }
     Action(localized("Vincular movimiento · {0}", item.displayName())) { open("f06link",item.id) }
     Action(localized("Cambiar periodo de financiación · {0}", item.displayName())) { open("f06financing",item.id) }
    }
@@ -162,22 +175,61 @@ internal fun configurationTitle(screen: String) =
  val occurrence=snapshot.occurrences.find { it.id==subject }
  when(action) {
   "f06salary" -> {
-   Text(localized("Salario neto esperado. Último lunes–viernes del mes civil, 09:00 America/Costa_Rica; no se calculan feriados. Solo una recepción confirmada modifica el saldo."))
+   Text(localized("Solo una recepción confirmada modifica el saldo."))
    val latest=snapshot.salaries.withIndex().maxWithOrNull(compareBy({ it.value.effectiveMonth }, { it.index }))?.value
    f.text("effective",localized("Vigente desde · AAAA-MM"),month); f.text("amount",localized("Salario neto"),latest?.netMinor?.let(::decimal).orEmpty(),true)
    val currency=f.choice("currency",localized("Moneda"),Currency.entries.map { it.name to it.name },latest?.currency?.name ?: "CRC")
    val account=f.account("account",localized("Cuenta de recepción sugerida"),cash.filter { it.currency.name==currency },latest?.accountId.orEmpty())
-   val schedule=f.choice("schedule",localized("Fecha nominal"),listOf("LAST" to localized("Último lunes–viernes"),"DAY" to localized("Día fijo del mes")),if(latest?.scheduleDay==null) "LAST" else "DAY")
-   if(schedule=="DAY") f.text("day",localized("Día nominal de recepción (1–31)"),(latest?.scheduleDay ?: 1).toString(),true)
+   val frequency = IncomeFrequency.valueOf(f.choice("frequency",localized("Frecuencia"),
+    IncomeFrequency.entries.map { it.name to it.incomeLabel() },latest?.frequency?.name ?: IncomeFrequency.MONTHLY.name))
+   val schedule = if (frequency == IncomeFrequency.MONTHLY) {
+    f.choice("schedule",localized("Fecha nominal"),listOf("LAST" to localized("Último lunes–viernes"),
+     "DAY" to localized("Día fijo del mes")),if(latest?.scheduleDay==null) "LAST" else "DAY")
+   } else ""
+   val anchor = latest?.anchorDate ?: today()
+   if (frequency != IncomeFrequency.MONTHLY) f.calendar("anchor",localized("Fecha de referencia"),anchor)
+   if (schedule=="DAY") f.text("day",localized("Día nominal de recepción (1–31)"),(latest?.scheduleDay ?: 1).toString(),true)
    f.text("reason",localized("Motivo de la versión"))
-   command={ F06Command.SaveSalary(draft.request(),SalaryVersion(draft.get("entity").ifBlank { newId().also { draft.set("entity",it) } },YearMonth.parse(f.required("effective",localized("mes"),month)).toString(),f.amount(label=localized("salario neto")),Currency.valueOf(currency),account.ifBlank { null },f.required("reason",localized("motivo")),if(schedule=="DAY") f.required("day",localized("día"),"1").toInt() else null)) }
+   command = {
+    F06Command.SaveSalary(draft.request(),SalaryVersion(
+     draft.get("entity").ifBlank { newId().also { draft.set("entity",it) } },
+     YearMonth.parse(f.required("effective",localized("mes"),month)).toString(),
+     f.amount(label=localized("salario neto")),Currency.valueOf(currency),account.ifBlank { null },
+     f.required("reason",localized("motivo")),if(schedule=="DAY") f.required("day",localized("día"),"1").toInt() else null,
+     frequency,if (frequency != IncomeFrequency.MONTHLY) f.date("anchor",anchor) else null,
+    ))
+   }
   }
   "f06extra" -> {
-   f.text("name",localized("Nombre del ingreso")); f.calendar("date",localized("Fecha esperada"),today()); f.text("amount",localized("Importe esperado"),numeric=true)
-   val currency=f.choice("currency",localized("Moneda"),Currency.entries.map { it.name to it.name })
-   val account=f.account("account",localized("Cuenta de recepción sugerida"),cash.filter { it.currency.name==currency })
+   val previous = snapshot.extraIncomes.filter { it.id==subject }.maxByOrNull { it.version }
+   val anchor = previous?.anchorDate ?: today()
+   f.text("name",localized("Nombre del ingreso"),previous?.name.orEmpty())
+   val recurring = previous != null || f.choice("recurring",localized("Recurrente"),
+    listOf("NO" to localized("No"),"YES" to localized("Sí"))) == "YES"
+   val frequency = if (recurring) f.choice("frequency",localized("Frecuencia"),
+    IncomeFrequency.entries.map { it.name to it.incomeLabel() },
+    previous?.frequency?.name ?: IncomeFrequency.MONTHLY.name) else "ONCE"
+   f.calendar("date",if (recurring) localized("Fecha de referencia") else localized("Fecha esperada"),anchor)
+   f.text("amount",localized("Importe esperado"),previous?.expectedMinor?.let(::decimal).orEmpty(),numeric=true)
+   val currency=f.choice("currency",localized("Moneda"),Currency.entries.map { it.name to it.name },previous?.currency?.name ?: "CRC")
+   val account=f.account("account",localized("Cuenta de recepción sugerida"),cash.filter { it.currency.name==currency },previous?.accountId.orEmpty())
+   val paused = if (previous == null) false else f.choice("status",localized("Estado"),
+    listOf("ACTIVE" to localized("Activa"),"PAUSED" to localized("Pausada")),if (previous.paused) "PAUSED" else "ACTIVE") == "PAUSED"
    Text(localized("Este registro es una expectativa. Confirma la recepción en el calendario cuando recibas el dinero."))
-   command={ val date=f.date(); F06Command.ExtraordinaryIncome(draft.request(),draft.get("entity").ifBlank { newId().also { draft.set("entity",it) } },f.required("name",localized("nombre")),date.take(7),date,f.amount(),Currency.valueOf(currency),account.ifBlank { null }) }
+   command = {
+    val date = f.date("date",anchor)
+    val id = previous?.id ?: draft.get("entity").ifBlank { newId().also { draft.set("entity",it) } }
+    val name = f.required("name",localized("nombre"))
+    val amount = f.amount()
+    val native = Currency.valueOf(currency)
+    val accountId = account.ifBlank { null }
+    if (frequency == "ONCE") F06Command.ExtraordinaryIncome(draft.request(),id,name,date.take(7),date,amount,native,accountId)
+    else F06Command.SaveExtraIncome(draft.request(),ExtraIncomeVersion(
+     id,(previous?.version ?: 0) + 1,name,
+     if (previous == null) date else maxOf(today(),previous.effectiveDate),
+     date,IncomeFrequency.valueOf(frequency),amount,native,accountId,paused,
+    ))
+   }
   }
   "f06template" -> {
    val old=snapshot.templates.filter { it.id==subject }.maxByOrNull { it.version }
@@ -186,7 +238,7 @@ internal fun configurationTitle(screen: String) =
    val categoryDefault = old?.category.orEmpty()
    f.category("category", localized("Categoría (opcional)"), ledger.categories, categoryDefault)
    f.text("effective",localized("Vigente desde · AAAA-MM"),month)
-   f.text("amount",localized("Importe propio estimado"),old?.minor?.let(::decimal).orEmpty(),true)
+   f.text("amount",localized("Monto/Importe propio estimado"),old?.minor?.let(::decimal).orEmpty(),true)
    val currency=f.choice("currency",localized("Moneda"),Currency.entries.map { it.name to it.name },old?.currency?.name ?: "CRC")
    val recurrence=f.choice("recurrence",localized("Frecuencia"),listOf("MONTHLY" to localized("Mensual"),"ANNUAL" to localized("Anual"),"EVERY_N_MONTHS" to localized("Cada N meses"),"TWO_SLOTS" to localized("Dos fechas fijas cada mes")),old?.frequency?.name ?: "MONTHLY")
    f.text("day",localized("Día nominal (1–31)"),(old?.day ?: 1).toString(),true)
@@ -200,7 +252,7 @@ internal fun configurationTitle(screen: String) =
    if(recurrence=="ANNUAL") f.text("contribution",localized("Aporte mensual previsto"),decimal(old?.monthlyContributionMinor ?: 0),true)
    val household=f.check("household",localized("Es un gasto compartido del hogar"),old?.householdTotalMinor!=null)
    var share="FIXED"
-   if(household) { f.text("total",localized("Total del hogar"),old?.householdTotalMinor?.let(::decimal).orEmpty(),true); share=f.choice("share",localized("Cómo calcular mi parte"),listOf("FIXED" to localized("Importe fijo propio"),"PERCENT" to localized("Porcentaje propio")),if(old?.ownPercent!=null) "PERCENT" else "FIXED"); if(share=="PERCENT") f.text("percent",localized("Mi porcentaje (0–100)"),old?.ownPercent ?: "50",true) else f.text("own",localized("Mi importe fijo"),old?.ownFixedMinor?.let(::decimal).orEmpty(),true); Text(localized("Solo tu parte se presupuesta y paga. Porcentajes se redondean HALF_UP al centavo.")) }
+   if(household) { f.text("total",localized("Total del hogar"),old?.householdTotalMinor?.let(::decimal).orEmpty(),true); share=f.choice("share",localized("Cómo calcular mi parte"),listOf("FIXED" to localized("Monto/Importe fijo propio"),"PERCENT" to localized("Porcentaje propio")),if(old?.ownPercent!=null) "PERCENT" else "FIXED"); if(share=="PERCENT") f.text("percent",localized("Mi porcentaje (0–100)"),old?.ownPercent ?: "50",true) else f.text("own",localized("Mi Monto/Importe fijo"),old?.ownFixedMinor?.let(::decimal).orEmpty(),true); Text(localized("Solo tu parte se presupuesta y paga. Porcentajes se redondean HALF_UP al centavo.")) }
    val paused=f.check("paused",localized("Pausar desde la vigencia elegida"),old?.paused ?: false)
    val cancelled=f.check("cancelled",localized("Cancelar desde la vigencia elegida"),old?.cancelled ?: false)
    f.text("reason",localized("Motivo de esta revisión"))
@@ -217,7 +269,7 @@ internal fun configurationTitle(screen: String) =
    if(occurrence==null) { Text(localized("Vuelve al calendario y sincroniza el periodo para elegir la obligación.")); return }
    InfoCard(occurrence.displayName(),localized("Fecha {0}\nTu pendiente {1}", occurrence.dueDate, money(occurrence.pendingMinor,occurrence.currency)) + if (occurrence.shared) localized("\nTotal pendiente del hogar {0}", money(occurrence.paymentPendingMinor, occurrence.currency)) else "",2)
    when(action) {
-    "f06confirm" -> { f.text("amount",localized("Importe real total"),decimal(occurrence.paymentTotalMinor),true); Text(localized("Confirma el total real, conservando el estimado y los pagos ya registrados.")); command={ F06Command.ConfirmAmount(draft.request(),subject,f.amount(allowZero=true)) } }
+    "f06confirm" -> { f.text("amount",localized("Monto/Importe real total"),decimal(occurrence.paymentTotalMinor),true); Text(localized("Confirma el total real, conservando el estimado y los pagos ya registrados.")); command={ F06Command.ConfirmAmount(draft.request(),subject,f.amount(allowZero=true)) } }
     "f06link" -> {
      val operations=ledger.operations.filter { !it.voided && it.type in (if(occurrence.nature==PlanNature.INCOME) setOf("INCOME") else setOf("EXPENSE","CREDIT_PURCHASE")) && ledger.accounts.any { account -> account.id==it.accountId && account.currency==occurrence.currency } }
      val operation=f.choice("operation",localized("Movimiento ya registrado"),operations.map { it.id to "${it.date} · ${it.merchant} · ${decimal(it.amountMinor)}" })
@@ -230,8 +282,8 @@ internal fun configurationTitle(screen: String) =
      val account=f.account("account",if (canUseCard) localized("Cuenta o tarjeta usada") else if(action=="f06fund") localized("Cuenta de financiación") else localized("Cuenta del movimiento real"),eligible.filter { it.currency==occurrence.currency },occurrence.suggestedAccountId.orEmpty())
      val alreadyDeducted = canUseCard && occurrence.paymentPendingMinor > 0 && f.check("alreadyDeducted", localized("Este pago ya se había descontado de la cuenta seleccionada"))
      if (!alreadyDeducted && eligible.any { it.id == account && it.kind == "LIABILITY" }) Text(localized("Se registra el cargo en la tarjeta. Pagá la tarjeta por separado desde tu cuenta de débito."))
-     if (alreadyDeducted) Text(localized("Importe a descontar: 0. Se marcará como pagado sin cambiar el saldo."))
-     else f.text("amount",if(action=="f06fund") localized("Importe a reservar") else localized("Importe real recibido o pagado"),decimal(if (action == "f06pay") occurrence.paymentPendingMinor else occurrence.pendingMinor),true)
+     if (alreadyDeducted) Text(localized("Monto/Importe a descontar: 0. Se marcará como pagado sin cambiar el saldo."))
+     else f.text("amount",if(action=="f06fund") localized("Monto/Importe a reservar") else localized("Monto/Importe real recibido o pagado"),decimal(if (action == "f06pay") occurrence.paymentPendingMinor else occurrence.pendingMinor),true)
      if(action!="f06fund") f.calendar("date",localized("Fecha real del movimiento"),today())
      val confirmed=f.check("confirmed",if(action=="f06fund") localized("Confirmo asignar dinero existente a la reserva") else localized("Confirmo que este movimiento realmente ocurrió"))
      if (!alreadyDeducted) Text(if(action=="f06fund") localized("Financiar reserva protege dinero existente y no paga la obligación. Puedes liberarlo desde Metas.") else localized("Puedes registrar una parte. El pendiente se reduce con este único movimiento vinculado."))

@@ -1,7 +1,6 @@
 package io.github.kannoncoding.wealthward.ui
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,8 +15,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -56,10 +57,11 @@ internal fun AccountActions(actions: List<CompactAction>) {
 @Composable
 private fun CompactActionGrid(actions: List<CompactAction>) {
     val palette = LocalPalette.current
-    val gap = 6.dp
+    val spacing = LocalUiSize.current.spacingScale
+    val gap = 6.dp * spacing
     val fontScale = LocalDensity.current.fontScale
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val readableCell = 62.dp * fontScale
+        val readableCell = (62.dp * fontScale).coerceAtLeast(48.dp)
         val columns = when {
             maxWidth >= readableCell * 4 + gap * 3 -> 4
             maxWidth >= readableCell * 2 + gap -> 2
@@ -74,11 +76,10 @@ private fun CompactActionGrid(actions: List<CompactAction>) {
                     row.forEach { action ->
                         Box(
                             Modifier.weight(1f).fillMaxHeight().heightIn(min = 48.dp)
-                                .panelShape(palette.panel, radius = 10)
-                                .border(1.dp, palette.divider, RoundedCornerShape(10.dp))
+                                .actionSurface()
                                 .clickable(role = Role.Button, onClick = action.onClick)
                                 .semantics { contentDescription = action.label }
-                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                                .padding(horizontal = 4.dp, vertical = 6.dp * spacing),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
@@ -99,14 +100,28 @@ private fun CompactActionGrid(actions: List<CompactAction>) {
 }
 
 @Composable
-internal fun CompactRecordAction(label: String, onClick: () -> Unit) {
+internal fun outlineActionColors(): ButtonColors {
     val palette = LocalPalette.current
+    return ButtonDefaults.outlinedButtonColors(
+        containerColor = palette.panel,
+        contentColor = palette.ink,
+        disabledContainerColor = palette.panel,
+        disabledContentColor = palette.ink.copy(alpha = .45f),
+    )
+}
+
+@Composable
+internal fun CompactRecordAction(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    val palette = LocalPalette.current
+    val spacing = LocalUiSize.current.spacingScale
     OutlinedButton(
         onClick = onClick,
-        shape = RoundedCornerShape(9.dp),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.ink),
-        border = BorderStroke(1.dp, palette.accent),
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+        enabled = enabled,
+        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+        shape = RoundedCornerShape(9.dp * spacing),
+        colors = outlineActionColors(),
+        border = BorderStroke(1.dp, palette.actionOutline.copy(alpha = if (enabled) 1f else 0.45f)),
+        contentPadding = PaddingValues(horizontal = 10.dp * spacing, vertical = 4.dp * spacing),
     ) {
         Text(label, style = MaterialTheme.typography.labelMedium)
     }

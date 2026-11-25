@@ -3,8 +3,6 @@ package io.github.kannoncoding.wealthward.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
@@ -21,7 +19,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -60,6 +57,7 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
  val context = LocalContext.current
  val preferences = remember(context) { context.getSharedPreferences("appearance", 0) }
  var appearance by remember { mutableStateOf(Appearance.entries.firstOrNull { it.name == preferences.getString("mode", null) } ?: Appearance.SYSTEM) }
+ var uiSize by remember { mutableStateOf(UiSize.entries.firstOrNull { it.name == preferences.getString("ui_size", null) } ?: UiSize.STANDARD) }
  val isDark = appearance == Appearance.DARK || appearance == Appearance.SYSTEM && isSystemInDarkTheme()
  SideEffect {
   (context as? android.app.Activity)?.window?.let { window ->
@@ -69,7 +67,7 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
    }
   }
  }
- WealthTheme(isDark) {
+ WealthTheme(isDark, uiSize) {
   val palette = LocalPalette.current
   val scope = rememberCoroutineScope()
   val repository = container.repository.workspace
@@ -132,51 +130,9 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
   var success by rememberSaveable { mutableStateOf("") }
   var busy by remember { mutableStateOf(false) }
   var ready by remember { mutableStateOf(false) }
-  var deferSalary by rememberSaveable { mutableStateOf(false) }
+  var deferredSalaries by rememberSaveable(currentDay.toString()) { mutableStateOf(arrayListOf<String>()) }
   var salarySaving by remember { mutableStateOf(false) }
   var salaryError by remember { mutableStateOf("") }
-  val dueSalary = if (ready && screen.isEmpty() && !deferSalary) {
-   plan.occurrences.asSequence().filter {
-    it.templateId == "salary" && it.paymentPendingMinor > 0 && it.dueDate <= currentDay.toString()
-   }.mapNotNull { occurrence ->
-    snapshot.accounts.firstOrNull {
-     it.id == occurrence.suggestedAccountId && !it.archived && it.kind == "CASH" && it.currency == occurrence.currency
-    }?.let { occurrence to it }
-   }.maxByOrNull { it.first.dueDate }
-  } else null
-  dueSalary?.let { (salary, account) ->
-   AlertDialog(
-    onDismissRequest = { if (!salarySaving) { deferSalary = true; salaryError = "" } },
-    title = { Text(localized("Confirmación de salario")) },
-    text = {
-     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      Text(localized("¿Recibiste este salario programado para el {0}?", salary.dueDate))
-      Text(money(salary.paymentPendingMinor, salary.currency), style = MaterialTheme.typography.titleLarge)
-      Text(localized("En la cuenta: {0}", account.name))
-      if (salaryError.isNotEmpty()) Text(salaryError, color = MaterialTheme.colorScheme.error)
-     }
-    },
-    dismissButton = { TextButton(enabled = !salarySaving, onClick = { deferSalary = true; salaryError = "" }) { Text(localized("Ahora no")) } },
-    confirmButton = {
-     TextButton(enabled = !salarySaving, onClick = {
-      salarySaving = true
-      salaryError = ""
-      scope.launch {
-       try {
-        planning.confirmSalary(salary.id, account.id, salary.paymentPendingMinor)
-        loadedPlan = planning.snapshot(planningMonth)
-       } catch (e: CancellationException) {
-        throw e
-       } catch (e: Exception) {
-        salaryError = userError(e)
-       } finally {
-        salarySaving = false
-       }
-      }
-     }) { Text(localized("Confirmar ingreso")) }
-    },
-   )
-  }
   val projectionLimits by container.files.projectionLimits.collectAsStateWithLifecycle(emptyMap())
   LaunchedEffect(Unit) {
    while (true) {
@@ -208,7 +164,6 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
    !screen.startsWith("f10") && screen !in setOf("upcoming", "f08")
   val errorFocus = remember { FocusRequester() }
   val exportMessages = remember { SnackbarHostState() }
-  val largeText = LocalDensity.current.fontScale > 1.3f
   LaunchedEffect(container) { try { container.initialize(); ready = true } catch (e: Exception) { failure = localized("No se pudieron abrir los datos: {0}", e.message) } }
   LaunchedEffect(ready, currentMonth, reminderHorizon) {
    if (ready) {
@@ -256,6 +211,52 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
    formMonth = currentMonth
    failure = ""
    success = ""
+  }
+  val dueSalary = if (ready && screen.isEmpty()) {
+   plan.occurrences.asSequence().filter {
+    it.templateId == "salary" && it.id !in deferredSalaries && it.paymentPendingMinor > 0 && it.dueDate <= currentDay.toString()
+   }.minByOrNull { it.dueDate }
+  } else null
+  dueSalary?.let { salary ->
+   val eligible = snapshot.accounts.filter { !it.archived && it.kind == "CASH" && it.currency == salary.currency }
+   val account = eligible.firstOrNull { it.id == salary.suggestedAccountId }
+   AlertDialog(
+    onDismissRequest = { if (!salarySaving) { deferredSalaries = ArrayList(deferredSalaries + salary.id); salaryError = "" } },
+    title = { Text(localized("Confirmación de salario")) },
+    text = {
+     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      Text(localized("¿Recibiste este salario programado para el {0}?", salary.dueDate))
+      Text(money(salary.paymentPendingMinor, salary.currency), style = MaterialTheme.typography.titleLarge)
+      if (account != null) Text(localized("En la cuenta: {0}", account.name))
+      else if (eligible.isEmpty()) Text(localized("Crea una cuenta de recepción en {0}.", salary.currency))
+      if (salaryError.isNotEmpty()) Text(salaryError, color = MaterialTheme.colorScheme.error)
+     }
+    },
+    dismissButton = { TextButton(enabled = !salarySaving, onClick = { deferredSalaries = ArrayList(deferredSalaries + salary.id); salaryError = "" }) { Text(localized("Ahora no")) } },
+    confirmButton = {
+     if (account == null) {
+      CompactRecordAction(localized(if (eligible.isEmpty()) "Crear cuenta" else "Elegir cuenta de recepción")) {
+       deferredSalaries = ArrayList(deferredSalaries + salary.id)
+       if (eligible.isEmpty()) open("account") else open("f06pay", salary.id)
+      }
+     } else TextButton(enabled = !salarySaving, onClick = {
+      salarySaving = true
+      salaryError = ""
+      scope.launch {
+       try {
+        planning.confirmSalary(salary.id, account.id, salary.paymentPendingMinor)
+        loadedPlan = planning.snapshot(planningMonth)
+       } catch (e: CancellationException) {
+        throw e
+       } catch (e: Exception) {
+        salaryError = userError(e)
+       } finally {
+        salarySaving = false
+       }
+      }
+     }) { Text(localized("Confirmar ingreso")) }
+    },
+   )
   }
   fun selectTab(index: Int) {
    if (index == selected) {
@@ -316,30 +317,14 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
   }
   val scroll = key(selected, screen, subject, accountId) { rememberScrollState() }
   Scaffold(containerColor = palette.gradientEnd, contentColor = palette.ink, snackbarHost = { SnackbarHost(exportMessages) }, bottomBar = {
-   if (screen.isEmpty() && largeText) Row(Modifier.fillMaxWidth().background(palette.panel).navigationBarsPadding().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-    Tabs.forEachIndexed { index, title -> FilterChip(selected = selected == index, onClick = { selectTab(index) }, label = { Text(title) }, modifier = Modifier.heightIn(min = 48.dp)) }
-   }
-   else if (screen.isEmpty()) Box(Modifier.fillMaxWidth().background(palette.gradientEnd).navigationBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp)) {
-    Row(Modifier.fillMaxWidth().selectableGroup().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-     Tabs.forEachIndexed { index, title ->
-      val active = selected == index
-      Column(Modifier.weight(1f).heightIn(min = 52.dp)
-       .selectable(active, role = Role.Tab, onClick = { selectTab(index) })
-       .semantics { contentDescription = title }.padding(vertical = 5.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-       val ink = if (active) Turquoise else palette.ink
-       TabIcon(index, ink)
-       Text(title, color = ink, maxLines = 1, style = MaterialTheme.typography.labelSmall)
-      }
-     }
-    }
-   }
+   if (screen.isEmpty()) WealthNavigationBar(Tabs, selected, ::selectTab)
   }) { padding ->
    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(palette.base, palette.gradientEnd))).padding(padding), contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
-    Column(Modifier.widthIn(max = 800.dp).fillMaxWidth().verticalScroll(scroll).imePadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(Modifier.widthIn(max = 800.dp).fillMaxWidth().verticalScroll(scroll).imePadding().padding(16.dp * uiSize.spacingScale), verticalArrangement = Arrangement.spacedBy(12.dp * uiSize.spacingScale)) {
      val summaryHome = screen.isEmpty() && selected == 0
      if (screen.isNotEmpty()) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-      TextButton(onClick = { back() }, enabled = !busy) { Text(localized("Volver")) }
-      if (hasDraftForm) TextButton(onClick = { confirmClear = true }, enabled = !busy) { Text(localized("Limpiar datos")) }
+      CompactRecordAction(localized("Volver"), enabled = !busy) { back() }
+      if (hasDraftForm) CompactRecordAction(localized("Limpiar datos"), enabled = !busy) { confirmClear = true }
      }
      if (confirmClear) AlertDialog(
       onDismissRequest = { confirmClear = false },
@@ -369,10 +354,18 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
       if (screen == "upcoming") {
        MonthlySummary(currentMonth, currentDay, snapshot, plan, commitmentPlan, projection.result, showAllPayments = true, open = ::open)
       } else if (screen == "sectionAppearance") {
-       AppearanceSettings(appearance) { mode ->
-        preferences.edit().putString("mode", mode.name).apply()
-        appearance = mode
-       }
+       AppearanceSettings(
+        current = appearance,
+        uiSize = uiSize,
+        select = { mode ->
+         preferences.edit().putString("mode", mode.name).apply()
+         appearance = mode
+        },
+        selectSize = { size ->
+         preferences.edit().putString("ui_size", size.name).apply()
+         uiSize = size
+        },
+       )
        Action("Idioma / Language", menu = true) { open("sectionLanguage") }
       } else if (screen == "sectionLanguage") {
        LanguageSettings(context)
@@ -420,7 +413,7 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
        val monthlyBills = monthlyAccountBills(plan, currentMonth)
        Action(localized("Crear cuenta"), accent = true) { open("account") }
        if (accountId.isNotEmpty()) {
-        TextButton(onClick = { back() }, modifier = Modifier.heightIn(min = 48.dp)) { Text(localized("← Todos los productos")) }
+        CompactRecordAction(localized("← Todos los productos")) { back() }
         snapshot.accounts.find { it.id == accountId }?.let { account ->
          val bills = monthlyBills[account.id].orEmpty()
          AccountCard(account, bills, detailed = true)
@@ -513,10 +506,8 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
 }
 @Composable internal fun Action(title: String, enabled: Boolean = true, accent: Boolean = false, menu: Boolean = false, accentText: Boolean = false, onClick: () -> Unit) {
  val p = LocalPalette.current
- val surface = if (menu) Modifier else Modifier.panelShape(if (accent) p.selection.background else p.panel, radius = 11)
- Column {
  Row(Modifier.fillMaxWidth().heightIn(min = if (menu) 55.dp else 48.dp)
-  .then(surface)
+  .actionSurface(accent = accent, enabled = enabled, radius = 11)
   .clickable(enabled = enabled, role = Role.Button, onClick = onClick).padding(horizontal = 14.dp, vertical = 8.dp),
   verticalAlignment = Alignment.CenterVertically,
   horizontalArrangement = if (menu) Arrangement.SpaceBetween else Arrangement.Center) {
@@ -524,8 +515,6 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
    color = (if (accent) p.selection.text else if (accentText) p.accent else p.ink).copy(alpha = if (enabled) 1f else .5f),
    fontWeight = FontWeight.SemiBold)
   if (menu) Text("›", modifier = Modifier.clearAndSetSemantics { }, style = MaterialTheme.typography.titleLarge)
- }
- if (menu) HorizontalDivider(color = p.divider)
  }
 }
 @Composable private fun AccountCard(account: AccountDetail, bills: List<PlannedOccurrence>, detailed: Boolean = false, onClick: (() -> Unit)? = null) {
@@ -575,7 +564,7 @@ private fun OperationDetail.historyTitle() =
  var expanded by remember { mutableStateOf(false) }
  val all = localized("Todas las categorías")
  Box {
-  OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+  OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = outlineActionColors()) {
    Text(categories.firstOrNull { it.id == selected }?.name ?: all)
   }
   DropdownMenu(expanded, onDismissRequest = { expanded = false }) {

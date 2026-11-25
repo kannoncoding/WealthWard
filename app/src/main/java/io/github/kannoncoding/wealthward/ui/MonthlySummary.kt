@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.text.NumberFormat
@@ -82,7 +83,7 @@ internal fun MonthlySummary(
                             "f07installment" to (it.nominalMonth + "/" + it.templateId.removePrefix("term-debt:"))
                         else "f06pay" to it.id
                     } ?: due.account?.takeIf { due.id.startsWith("card:") }?.let { "payment" to it }
-                    UpcomingPaymentRow(due, month, action?.let { (route, argument) -> { open(route, argument) } })
+                    UpcomingPaymentRow(due, month, onClick = action?.let { (route, argument) -> { open(route, argument) } })
                 }
         }
         return
@@ -121,7 +122,8 @@ internal fun MonthlySummary(
         }
     }
     GoldClasp()
-    Column(Modifier.fillMaxWidth().clickable(role = androidx.compose.ui.semantics.Role.Button) { open("upcoming", "") }
+    Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).actionSurface()
+        .clickable(role = Role.Button) { open("upcoming", "") }
         .padding(horizontal = 5.dp, vertical = 5.dp)) {
         Text(localized("Próximamente"), style = MaterialTheme.typography.titleLarge, fontSize = 18.sp,
             modifier = Modifier.padding(bottom = 5.dp))
@@ -207,8 +209,9 @@ private val summaryDate get() = DateTimeFormatter.ofPattern(
 
 @Composable
 private fun UpcomingPaymentRow(due: Due, month: String, onClick: (() -> Unit)? = null) {
-    val click = if (onClick == null) Modifier else Modifier.clickable(onClick = onClick)
-    Row(Modifier.fillMaxWidth().heightIn(min = 40.dp)
+    val click = if (onClick == null) Modifier else Modifier.actionSurface()
+        .clickable(role = Role.Button, onClick = onClick)
+    Row(Modifier.fillMaxWidth().heightIn(min = if (onClick == null) 40.dp else 48.dp)
         .then(click).padding(horizontal = 3.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {

@@ -1,6 +1,8 @@
 package io.github.kannoncoding.wealthward.data
 
 import io.github.kannoncoding.wealthward.domain.*
+import java.time.LocalDate
+import java.time.format.DateTimeParseException
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -45,7 +47,33 @@ internal fun JSONObject.debt() = Debt(
     ExtraPaymentPolicy.valueOf(getString("extraPaymentPolicy")), f07Text("suggestedAccountId"),
     DebtAmortization.valueOf(getString("amortization")),
     if (has("intervalMonths")) int("intervalMonths") else 1,
+    f07Text("maturityDate"), optBoolean("estimateTermFromBalance"),
+    optBoolean("estimatedOpeningPrincipal"), f07OptionalLong("installmentChargesMinor"),
 )
+internal fun JSONObject.debtMaturityEdits(): List<JSONObject> =
+    if (has("debtMaturityEdits")) f07Rows("debtMaturityEdits") else emptyList()
+
+internal fun debtDate(value: String, error: String): LocalDate = try {
+    LocalDate.parse(value)
+} catch (_: DateTimeParseException) {
+    f07Invalid(error)
+}
+
+internal fun Debt.withMaturity(date: String): Debt {
+    val due = debtDate(firstDueDate, "Choose a valid first installment date.")
+    val maturity = debtDate(date, "Choose a valid maturity date.")
+    if (maturity < due) f07Invalid(DEBT_DATE_ERROR)
+    val count = installmentsThrough(due, maturity, intervalMonths)
+    if (count !in 1L..debtInstallmentLimit(intervalMonths).toLong()) f07Invalid(DEBT_TERM_LIMIT)
+    return copy(maturityDate = date, remainingMonths = count.toInt(), estimateTermFromBalance = false)
+}
+
+internal fun JSONObject.debtWithMaturity(row: JSONObject): Debt {
+    val original = row.debt()
+    return debtMaturityEdits().lastOrNull { it.getString("debtId") == original.id }
+        ?.let { original.withMaturity(it.getString("maturityDate")) } ?: original
+}
+
 internal fun JSONObject.debtPayment() = DebtPayment(
     getString("id"), getString("debtId"), getString("accountId"), getString("date"), f07Text("installmentMonth"),
     f07Long("principalMinor"), f07Long("interestMinor"), f07Long("chargesMinor"),

@@ -9,18 +9,32 @@ enum class Recurrence { MONTHLY, ANNUAL, EVERY_N_MONTHS, TWO_SLOTS }
 data class PlanRow(val id:String, val name:String, val group:String, val nature:PlanNature, val minor:Long, val currency:Currency, val suggestedAccountId:String?=null, val accumulate:Boolean=false)
 data class PeriodPlan(val month:String, val version:Int, val rows:List<PlanRow>, val targetMinor:Long=0, val targetCurrency:Currency=Currency.CRC, val reason:String="", val effectiveDate:String=month+"-01")
 data class RecurringTemplate(val id:String, val version:Int, val name:String, val group:String, val nature:PlanNature, val minor:Long, val currency:Currency, val effectiveMonth:String, val frequency:Recurrence=Recurrence.MONTHLY, val day:Int=1, val secondDay:Int=15, val intervalMonths:Int=1, val suggestedAccountId:String?=null, val purposeId:String?=null, val paused:Boolean=false, val cancelled:Boolean=false, val householdTotalMinor:Long?=null, val ownPercent:String?=null, val ownFixedMinor:Long?=null, val monthlyContributionMinor:Long=0, val reason:String="", val anchorMonth:String=effectiveMonth, val category:String?=null)
-data class SalaryVersion(val id:String, val effectiveMonth:String, val netMinor:Long, val currency:Currency, val accountId:String?=null, val reason:String="", val scheduleDay:Int?=null)
+enum class IncomeFrequency(val intervalDays: Long?) { MONTHLY(null), WEEKLY(7), EVERY_14_DAYS(14) }
+data class SalaryVersion(val id:String, val effectiveMonth:String, val netMinor:Long, val currency:Currency, val accountId:String?=null, val reason:String="", val scheduleDay:Int?=null, val frequency:IncomeFrequency=IncomeFrequency.MONTHLY, val anchorDate:String?=null)
+data class ExtraIncomeVersion(
+ val id: String,
+ val version: Int,
+ val name: String,
+ val effectiveDate: String,
+ val anchorDate: String,
+ val frequency: IncomeFrequency,
+ val expectedMinor: Long,
+ val currency: Currency,
+ val accountId: String? = null,
+ val paused: Boolean = false,
+)
 data class PlannedOccurrence(val id:String, val templateId:String, val templateVersion:Int, val nominalMonth:String, val slot:Int, val name:String, val group:String, val nature:PlanNature, val currency:Currency, val dueDate:String, val expectedMinor:Long, val confirmedMinor:Long?, val paidMinor:Long, val pendingMinor:Long, val suggestedAccountId:String?, val purposeId:String?, val overdue:Boolean, val paymentIds:List<String>, val financingMonth:String=nominalMonth, val cashPaidMinor:Long=paidMinor, val previouslyDeducted: Boolean = false, val paymentTotalMinor: Long = confirmedMinor ?: expectedMinor, val paymentPendingMinor: Long = pendingMinor, val shared: Boolean = false)
 data class ReminderPreference(val enabled:Boolean=false, val daysBefore:Int=1, val hour:Int=9, val additionalDays:List<Int> = emptyList()) {
  val leads get() = listOfNotNull(daysBefore.takeIf { it >= 0 }) + additionalDays
 }
 data class BudgetComparison(val group:String, val nature:PlanNature, val currency:Currency, val budgetMinor:Long, val actualMinor:Long, val differenceMinor:Long, val consumptionMinor:Long=actualMinor)
-data class F06Snapshot(val plans:List<PeriodPlan> = emptyList(), val templates:List<RecurringTemplate> = emptyList(), val salaries:List<SalaryVersion> = emptyList(), val occurrences:List<PlannedOccurrence> = emptyList(), val comparisons:List<BudgetComparison> = emptyList(), val reminders:ReminderPreference=ReminderPreference(), val targetBaseMinor:Map<Currency,Long> = emptyMap())
+data class F06Snapshot(val plans:List<PeriodPlan> = emptyList(), val templates:List<RecurringTemplate> = emptyList(), val salaries:List<SalaryVersion> = emptyList(), val occurrences:List<PlannedOccurrence> = emptyList(), val comparisons:List<BudgetComparison> = emptyList(), val reminders:ReminderPreference=ReminderPreference(), val targetBaseMinor:Map<Currency,Long> = emptyMap(), val extraIncomes:List<ExtraIncomeVersion> = emptyList())
 sealed interface F06Command {
  val requestId:String
  data class SavePlan(override val requestId:String,val plan:PeriodPlan):F06Command
  data class SaveTemplate(override val requestId:String,val template:RecurringTemplate):F06Command
  data class SaveSalary(override val requestId:String,val salary:SalaryVersion):F06Command
+ data class SaveExtraIncome(override val requestId:String,val income:ExtraIncomeVersion):F06Command
  data class OpenPeriod(override val requestId:String,val month:String):F06Command
  data class CopyPeriod(override val requestId:String,val sourceMonth:String,val targetMonth:String):F06Command
  data class ConfirmAmount(override val requestId:String,val occurrenceId:String,val minor:Long):F06Command
@@ -43,6 +57,20 @@ object PlanningMath {
  }
  fun due(month:YearMonth,day:Int):LocalDate { require(day in 1..31); return month.atDay(minOf(day,month.lengthOfMonth())) }
  fun salaryDate(month:YearMonth):LocalDate { var day=month.atEndOfMonth(); while(day.dayOfWeek==DayOfWeek.SATURDAY || day.dayOfWeek==DayOfWeek.SUNDAY) day=day.minusDays(1); return day }
+ fun incomeDates(month: YearMonth, frequency: IncomeFrequency, anchor: LocalDate): List<LocalDate> {
+  if (anchor > month.atEndOfMonth()) return emptyList()
+  val interval = frequency.intervalDays ?: return listOf(due(month, anchor.dayOfMonth))
+  val start = maxOf(anchor, month.atDay(1))
+  val elapsed = start.toEpochDay() - anchor.toEpochDay()
+  val first = start.plusDays((interval - elapsed % interval) % interval)
+  return generateSequence(first) { it.plusDays(interval) }.takeWhile { it <= month.atEndOfMonth() }.toList()
+ }
+ fun salaryDates(month: YearMonth, salary: SalaryVersion): List<LocalDate> =
+  if (salary.frequency == IncomeFrequency.MONTHLY) {
+   listOf(salary.scheduleDay?.let { due(month, it) } ?: salaryDate(month))
+  } else {
+   incomeDates(month, salary.frequency, LocalDate.parse(salary.anchorDate))
+  }
  fun slots(template:RecurringTemplate,month:YearMonth):List<LocalDate> {
   val start=YearMonth.parse(template.anchorMonth); val delta=java.time.temporal.ChronoUnit.MONTHS.between(start,month)
   if(delta<0 || template.paused || template.cancelled) return emptyList()

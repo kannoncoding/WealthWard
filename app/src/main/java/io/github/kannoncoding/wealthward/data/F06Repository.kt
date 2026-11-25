@@ -80,7 +80,7 @@ class F06Repository(private val db:WealthDatabase) {
    })
   }
   val rem=p.getJSONObject("reminders")
-  F06Snapshot(plans,p.rows("templates").map(::template),p.rows("salaries").map(::salary),occurrences,comparison,ReminderPreference(rem.getBoolean("enabled"),rem.getInt("daysBefore"),rem.getInt("hour"), reminderExtras(rem)),targetBase)
+  F06Snapshot(plans,p.rows("templates").map(::template),p.rows("salaries").map(::salary),occurrences,comparison,ReminderPreference(rem.getBoolean("enabled"),rem.getInt("daysBefore"),rem.getInt("hour"), reminderExtras(rem)),targetBase,p.readExtraIncomes())
  }
  private fun descendants(ids:List<String>,ops:List<OperationDetail>):Set<String> {
   val result=ids.toMutableSet(); var changed=true
@@ -154,7 +154,26 @@ class F06Repository(private val db:WealthDatabase) {
   when(val c=command) {
    is F06Command.SavePlan -> { validatePlan(c.plan); if(c.plan.version!=(p.rows("plans").filter { it.getString("month")==c.plan.month }.maxOfOrNull { it.getInt("version") } ?: 0)+1) fail("Plan versions must advance sequentially"); if(p.rows("plans").any { it.getString("month")==c.plan.month && it.getInt("version")==c.plan.version }) fail("Plan version already exists"); p.appendRow("plans",json(c.plan)) }
    is F06Command.SaveTemplate -> { validateTemplate(c.template); val history=p.rows("templates").filter { it.getString("id")==c.template.id }; if(history.any { it.getInt("version")==c.template.version } || (history.maxOfOrNull { it.getInt("version") } ?: 0)+1!=c.template.version) fail("Template versions must advance sequentially"); val anchored=c.template.copy(anchorMonth=history.firstOrNull()?.getString("anchorMonth") ?: c.template.anchorMonth); p.appendRow("templates",json(anchored)); p.rows("opened").map { it.getString("month") }.forEach { generate(p,it) } }
-   is F06Command.SaveSalary -> { val s=c.salary; YearMonth.parse(s.effectiveMonth); if(s.scheduleDay!=null && s.scheduleDay !in 1..31) fail("Invalid salary day"); positive(s.netMinor); account(s.accountId,s.currency); if(s.id.isBlank() || p.rows("salaries").any { it.getString("id")==s.id }) fail("Salary revision identity must be unique"); p.appendRow("salaries",json(s)); p.rows("opened").map { it.getString("month") }.forEach { generate(p,it) } }
+   is F06Command.SaveSalary -> {
+    val salary = c.salary
+    validateSalary(salary)
+    account(salary.accountId,salary.currency)
+    if (p.rows("salaries").any { it.getString("id") == salary.id }) fail("Salary revision identity must be unique")
+    p.appendRow("salaries",json(salary))
+    p.rows("opened").forEach { generate(p,it.getString("month")) }
+   }
+   is F06Command.SaveExtraIncome -> {
+    val income = c.income
+    validateExtraIncome(income)
+    account(income.accountId,income.currency)
+    val previous = p.readExtraIncomes().filter { it.id == income.id }.maxByOrNull { it.version }
+    if (income.version != (previous?.version ?: 0) + 1 ||
+     previous != null && income.effectiveDate < previous.effectiveDate) fail("Income revisions must advance sequentially")
+    val revisions = p.optJSONArray("extraIncomes") ?: JSONArray().also { p.put("extraIncomes",it) }
+    revisions.put(json(income))
+    val months = p.rows("opened").map { it.getString("month") } + income.effectiveDate.take(7)
+    months.distinct().forEach { generate(p,it) }
+   }
    is F06Command.OpenPeriod -> {
     val target = YearMonth.parse(c.month)
     val opened = p.rows("opened").map { YearMonth.parse(it.getString("month")) }.toSet()
@@ -233,7 +252,45 @@ class F06Repository(private val db:WealthDatabase) {
     }
    }
   }
-  p.rows("salaries").map(::salary).filter { it.effectiveMonth<=month }.maxWithOrNull(compareBy<SalaryVersion> { it.effectiveMonth }.thenBy { p.rows("salaries").map { raw -> raw.getString("id") }.indexOf(it.id) })?.let { s -> val id="salary:$month:0"; val old=p.rows("occurrences").find { it.getString("id")==id }; val row=newOccurrence(id,"salary",1,month,0,"Salary","Income",PlanNature.INCOME,s.currency,(s.scheduleDay?.let { PlanningMath.due(ym,it) } ?: PlanningMath.salaryDate(ym)).toString(),s.netMinor,s.accountId,null).put("salaryRevisionId",s.id); if(old==null) p.appendRow("occurrences",row) else if(old.getJSONArray("paymentIds").length()==0 && !LocalDate.parse(old.getString("dueDate")).isBefore(LocalDate.now(BusinessTime.zone))) row.keys().forEach { old.put(it,row.get(it)) } }
+  fun syncIncome(existing: List<JSONObject>, scheduled: List<JSONObject>) {
+   val byId = existing.associateBy { it.getString("id") }
+   val ids = scheduled.map { it.getString("id") }.toSet()
+   val lockedDates = existing.filter { !it.optBoolean("suppressed") && !canReviseIncome(it,today) }
+    .map { it.getString("dueDate") }.toSet()
+   existing.filter { it.getString("id") !in ids && canReviseIncome(it,today) }.forEach { it.put("suppressed",true) }
+   for (row in scheduled) {
+    val old = byId[row.getString("id")]
+    if (old != null && !canReviseIncome(old,today)) continue
+    if (row.getString("dueDate") in lockedDates) old?.put("suppressed",true)
+    else if (old == null) p.appendRow("occurrences",row)
+    else row.keys().forEach { old.put(it,row.get(it)) }
+   }
+  }
+  val salary = p.rows("salaries").map(::salary).filter { it.effectiveMonth <= month }
+   .withIndex().maxWithOrNull(compareBy({ it.value.effectiveMonth },{ it.index }))?.value
+  if (salary != null) {
+   val rows = PlanningMath.salaryDates(ym,salary).map { date ->
+    val slot = if (salary.frequency == IncomeFrequency.MONTHLY) 0 else date.dayOfMonth
+    newOccurrence("salary:$month:$slot","salary",1,month,slot,"Salary","Income",PlanNature.INCOME,
+     salary.currency,date.toString(),salary.netMinor,salary.accountId,null).put("salaryRevisionId",salary.id)
+   }
+   syncIncome(occurrences["salary"].orEmpty(),rows)
+  }
+  p.readExtraIncomes().groupBy { it.id }.forEach { (id,revisions) ->
+   val templateId = "recurring-extra:$id"
+   val eligible = revisions.filter { it.effectiveDate <= ym.atEndOfMonth().toString() }
+   val rows = eligible.filterNot { it.paused }.flatMap { revision ->
+    PlanningMath.incomeDates(ym,revision.frequency,LocalDate.parse(revision.anchorDate))
+     .filter { date ->
+      eligible.filter { it.effectiveDate <= date.toString() }.maxByOrNull { it.version } == revision
+     }.map { date ->
+      val slot = date.dayOfMonth
+      newOccurrence("$templateId:$month:$slot",templateId,revision.version,month,slot,revision.name,"Income",
+       PlanNature.INCOME,revision.currency,date.toString(),revision.expectedMinor,revision.accountId,null)
+     }
+   }
+   syncIncome(occurrences[templateId].orEmpty(),rows)
+  }
  }
  private fun findOccurrence(p:JSONObject,id:String)=p.rows("occurrences").find { it.getString("id")==id && !it.optBoolean("suppressed") } ?: fail("Unknown occurrence")
  private fun net(id:String,ops:List<OperationDetail>):Long { val o=ops.find { it.id==id } ?: return 0; if(o.voided) { return ops.filter { it.originalId==id && it.type in setOf("INCOME","EXPENSE","CREDIT_PURCHASE") }.map { net(it.id,ops) }.let(::checkedSum) }; return o.amountMinor-o.refundedMinor }
@@ -272,8 +329,40 @@ private fun JSONObject.nullText(key:String)=if(isNull(key)) null else getString(
 private fun json(r:PlanRow)=obj("id" to r.id,"name" to r.name,"group" to r.group,"nature" to r.nature.name,"minor" to r.minor,"currency" to r.currency.name,"suggestedAccountId" to r.suggestedAccountId,"accumulate" to r.accumulate)
 private fun json(p:PeriodPlan)=obj("month" to p.month,"version" to p.version,"targetMinor" to p.targetMinor,"targetCurrency" to p.targetCurrency.name,"reason" to p.reason,"effectiveDate" to p.effectiveDate,"rows" to JSONArray(p.rows.map(::json)))
 internal fun plan(p:JSONObject)=PeriodPlan(p.getString("month"),p.getInt("version"),p.rows("rows").map { PlanRow(it.getString("id"),it.getString("name"),it.getString("group"),PlanNature.valueOf(it.getString("nature")),it.getLong("minor"),Currency.valueOf(it.getString("currency")),it.nullText("suggestedAccountId"),it.getBoolean("accumulate")) },p.getLong("targetMinor"),Currency.valueOf(p.getString("targetCurrency")),p.getString("reason"),p.getString("effectiveDate"))
-private fun json(s:SalaryVersion)=obj("id" to s.id,"effectiveMonth" to s.effectiveMonth,"netMinor" to s.netMinor,"currency" to s.currency.name,"accountId" to s.accountId,"reason" to s.reason,"scheduleDay" to s.scheduleDay)
-private fun salary(s:JSONObject)=SalaryVersion(s.getString("id"),s.getString("effectiveMonth"),s.getLong("netMinor"),Currency.valueOf(s.getString("currency")),s.nullText("accountId"),s.getString("reason"),if(s.isNull("scheduleDay")) null else s.getInt("scheduleDay"))
+private fun json(s:SalaryVersion)=obj("id" to s.id,"effectiveMonth" to s.effectiveMonth,"netMinor" to s.netMinor,"currency" to s.currency.name,"accountId" to s.accountId,"reason" to s.reason,"scheduleDay" to s.scheduleDay).apply {
+ if (s.frequency != IncomeFrequency.MONTHLY) put("frequency",s.frequency.name)
+ s.anchorDate?.let { put("anchorDate",it) }
+}
+private fun salary(s:JSONObject)=SalaryVersion(s.getString("id"),s.getString("effectiveMonth"),s.getLong("netMinor"),Currency.valueOf(s.getString("currency")),s.nullText("accountId"),s.getString("reason"),if(s.isNull("scheduleDay")) null else s.getInt("scheduleDay"),IncomeFrequency.valueOf(s.optString("frequency",IncomeFrequency.MONTHLY.name)),s.nullText("anchorDate"))
+private fun validateSalary(s: SalaryVersion) {
+ YearMonth.parse(s.effectiveMonth)
+ if (s.id.isBlank() || s.netMinor <= 0 || (s.scheduleDay != null && s.scheduleDay !in 1..31)) fail("Invalid salary")
+ if (s.frequency == IncomeFrequency.MONTHLY) {
+  if (s.anchorDate != null) fail("Invalid salary anchor")
+ } else {
+  if (s.anchorDate == null || s.scheduleDay != null) fail("A weekly or 14-day salary needs an anchor date")
+  LocalDate.parse(s.anchorDate)
+ }
+}
+private fun json(i: ExtraIncomeVersion) = obj(
+ "id" to i.id,"version" to i.version,"name" to i.name,"effectiveDate" to i.effectiveDate,
+ "anchorDate" to i.anchorDate,"frequency" to i.frequency.name,"expectedMinor" to i.expectedMinor,
+ "currency" to i.currency.name,"accountId" to i.accountId,"paused" to i.paused,
+)
+private fun extraIncome(i: JSONObject) = ExtraIncomeVersion(
+ i.getString("id"),i.getInt("version"),i.getString("name"),i.getString("effectiveDate"),
+ i.getString("anchorDate"),IncomeFrequency.valueOf(i.getString("frequency")),i.getLong("expectedMinor"),
+ Currency.valueOf(i.getString("currency")),i.nullText("accountId"),i.getBoolean("paused"),
+)
+private fun JSONObject.readExtraIncomes() = if (has("extraIncomes")) rows("extraIncomes").map(::extraIncome) else emptyList()
+private fun validateExtraIncome(i: ExtraIncomeVersion) {
+ LocalDate.parse(i.effectiveDate)
+ LocalDate.parse(i.anchorDate)
+ if (i.id.isBlank() || i.name.isBlank() || i.version < 1 || i.expectedMinor <= 0) fail("Invalid recurring income")
+}
+private fun canReviseIncome(row: JSONObject,today: LocalDate) =
+ row.isNull("confirmedMinor") && row.getJSONArray("paymentIds").length() == 0 &&
+  (row.optBoolean("suppressed") || LocalDate.parse(row.getString("dueDate")) >= today)
 private fun json(t:RecurringTemplate)=obj("id" to t.id,"version" to t.version,"name" to t.name,"group" to t.group,"nature" to t.nature.name,"minor" to t.minor,"currency" to t.currency.name,"effectiveMonth" to t.effectiveMonth,"frequency" to t.frequency.name,"day" to t.day,"secondDay" to t.secondDay,"intervalMonths" to t.intervalMonths,"suggestedAccountId" to t.suggestedAccountId,"purposeId" to t.purposeId,"paused" to t.paused,"cancelled" to t.cancelled,"householdTotalMinor" to t.householdTotalMinor,"ownPercent" to t.ownPercent,"ownFixedMinor" to t.ownFixedMinor,"monthlyContributionMinor" to t.monthlyContributionMinor,"reason" to t.reason,"anchorMonth" to t.anchorMonth).apply { t.category?.let { put("category", it) } }
 private fun template(t:JSONObject)=RecurringTemplate(t.getString("id"),t.getInt("version"),t.getString("name"),t.getString("group"),PlanNature.valueOf(t.getString("nature")),t.getLong("minor"),Currency.valueOf(t.getString("currency")),t.getString("effectiveMonth"),Recurrence.valueOf(t.getString("frequency")),t.getInt("day"),t.getInt("secondDay"),t.getInt("intervalMonths"),t.nullText("suggestedAccountId"),t.nullText("purposeId"),t.getBoolean("paused"),t.getBoolean("cancelled"),if(t.isNull("householdTotalMinor")) null else t.getLong("householdTotalMinor"),t.nullText("ownPercent"),if(t.isNull("ownFixedMinor")) null else t.getLong("ownFixedMinor"),t.getLong("monthlyContributionMinor"),t.getString("reason"),t.getString("anchorMonth"),t.nullText("category"))
 private fun newOccurrence(id:String,template:String,version:Int,month:String,slot:Int,name:String,group:String,nature:PlanNature,currency:Currency,due:String,minor:Long,account:String?,purpose:String?)=obj("id" to id,"templateId" to template,"templateVersion" to version,"nominalMonth" to month,"slot" to slot,"name" to name,"group" to group,"nature" to nature.name,"currency" to currency.name,"dueDate" to due,"expectedMinor" to minor,"confirmedMinor" to null,"suggestedAccountId" to account,"purposeId" to purpose,"financingMonth" to month,"paymentIds" to JSONArray(),"suppressed" to false)
@@ -287,11 +376,22 @@ internal fun validatePlanningRestore(state:JSONObject,accounts:List<AccountEntit
  val plans=p.rows("plans").map { raw -> integer(raw,"version"); integer(raw,"targetMinor"); raw.rows("rows").forEach { integer(it,"minor"); if(it.get("accumulate") !is Boolean) fail("Invalid accumulation flag") }; plan(raw) }
  val templates=p.rows("templates").map { raw -> listOf("version","minor","day","secondDay","intervalMonths","monthlyContributionMinor").forEach { integer(raw,it) }; listOf("householdTotalMinor","ownFixedMinor").forEach { if(!raw.isNull(it)) integer(raw,it) }; listOf("paused","cancelled").forEach { if(raw.get(it) !is Boolean) fail("Invalid template status") }; template(raw) }
  val salaries=p.rows("salaries").map { raw -> integer(raw,"netMinor"); if(!raw.isNull("scheduleDay")) integer(raw,"scheduleDay"); salary(raw) }
+ val extraIncomes = p.readExtraIncomes()
+ if (p.has("extraIncomes")) p.rows("extraIncomes").forEach {
+  integer(it,"version"); integer(it,"expectedMinor")
+  if (it.get("paused") !is Boolean) fail("Invalid recurring income status")
+ }
  fun ref(id:String?,currency:Currency,allowCard:Boolean=false) { if(id!=null && accounts.none { it.id==id && it.currency==currency.name && (it.kind=="CASH" || allowCard && it.kind=="LIABILITY") }) fail("Invalid planning account reference") }
  if(plans.map { it.month to it.version }.distinct().size!=plans.size || templates.map { it.id to it.version }.distinct().size!=templates.size || salaries.map { it.id }.distinct().size!=salaries.size) fail("Duplicate planning revisions")
  plans.forEach { v -> validateCategories(v); YearMonth.parse(v.month); LocalDate.parse(v.effectiveDate); if(v.version<1 || v.targetMinor<0 || v.rows.map { it.id }.distinct().size!=v.rows.size) fail("Invalid plan"); v.rows.forEach { if(it.id.isBlank() || it.name.isBlank() || it.group.isBlank() || it.minor<0) fail("Invalid plan row"); ref(it.suggestedAccountId,it.currency) } }
  templates.forEach { t -> YearMonth.parse(t.effectiveMonth); YearMonth.parse(t.anchorMonth); if(t.nature !in setOf(PlanNature.FIXED,PlanNature.SUBSCRIPTION,PlanNature.INCOME)) fail("Use reserve financing or account settlement for this financial nature"); if(t.category?.isBlank() == true || t.id.isBlank() || t.name.isBlank() || t.group.isBlank() || t.version<1 || t.minor<0 || t.day !in 1..31 || t.secondDay !in 1..31 || t.intervalMonths<1 || t.monthlyContributionMinor<0) fail("Invalid template"); PlanningMath.ownShare(t.householdTotalMinor ?: t.minor,t.ownPercent,t.ownFixedMinor); ref(t.suggestedAccountId,t.currency,t.nature!=PlanNature.INCOME) }
- salaries.forEach { YearMonth.parse(it.effectiveMonth); if(it.id.isBlank() || it.netMinor<=0 || (it.scheduleDay!=null && it.scheduleDay !in 1..31)) fail("Invalid salary"); ref(it.accountId,it.currency) }
+ salaries.forEach { validateSalary(it); ref(it.accountId,it.currency) }
+ extraIncomes.groupBy { it.id }.values.forEach { history ->
+  val versions = history.sortedBy { it.version }
+  if (versions.withIndex().any { it.value.version != it.index + 1 } ||
+   versions.zipWithNext().any { (a,b) -> a.effectiveDate > b.effectiveDate }) fail("Invalid recurring income revisions")
+  versions.forEach { validateExtraIncome(it); ref(it.accountId,it.currency) }
+ }
  val opened=p.rows("opened").map { it.getString("month").also(YearMonth::parse) }; if(opened.distinct().size!=opened.size) fail("Duplicate opened month")
  val operations=state.rows("operations"); val byId=operations.associateBy { it.getString("id") }; operations.forEach { origin -> val visited=mutableSetOf<String>(); var current:JSONObject?=origin; while(current!=null && !current.isNull("originalId")) { if(!visited.add(current.getString("id"))) fail("Cyclic operation graph"); current=byId[current.getString("originalId")] } }
  val occurrences=p.rows("occurrences"); if(occurrences.map { it.getString("id") }.distinct().size!=occurrences.size) fail("Duplicate occurrence")
@@ -299,8 +399,30 @@ internal fun validatePlanningRestore(state:JSONObject,accounts:List<AccountEntit
  val links=mutableSetOf<String>()
  occurrences.forEach { o ->
   val id=o.getString("id"); val month=o.getString("nominalMonth"); YearMonth.parse(month); YearMonth.parse(o.getString("financingMonth")); LocalDate.parse(o.getString("dueDate")); val nature=PlanNature.valueOf(o.getString("nature")); val currency=Currency.valueOf(o.getString("currency")); val templateId=o.getString("templateId"); val version=integer(o,"templateVersion"); val slot=integer(o,"slot"); if(o.get("suppressed") !is Boolean) fail("Invalid occurrence state")
-  if(id.isBlank() || o.getString("name").isBlank() || o.getString("group").isBlank() || slot !in 0..1 || integer(o,"expectedMinor")<0 || (!o.isNull("confirmedMinor") && integer(o,"confirmedMinor")<0)) fail("Invalid occurrence")
-  if(templateId=="salary") { if(salaries.none { it.id==o.getString("salaryRevisionId") && it.effectiveMonth<=month && it.currency==currency } || id!="salary:$month:0") fail("Invalid salary occurrence") } else if(id.startsWith("extra:")) { if(id!="extra:$templateId" || nature!=PlanNature.INCOME || version!=1L || slot!=0L) fail("Invalid extraordinary income identity") } else { val t=templates.find { it.id==templateId && it.version.toLong()==version } ?: fail("Unknown occurrence revision"); if(t.currency!=currency || t.nature!=nature || id!="$templateId:$month:$slot") fail("Invalid occurrence identity") }
+  if(id.isBlank() || o.getString("name").isBlank() || o.getString("group").isBlank() || slot !in 0..31 || integer(o,"expectedMinor")<0 || (!o.isNull("confirmedMinor") && integer(o,"confirmedMinor")<0)) fail("Invalid occurrence")
+  when {
+   templateId == "salary" -> {
+    val s = salaries.find { it.id==o.getString("salaryRevisionId") && it.effectiveMonth<=month && it.currency==currency }
+     ?: fail("Invalid salary revision")
+    val date = LocalDate.parse(o.getString("dueDate"))
+    val validSlot = if (s.frequency == IncomeFrequency.MONTHLY) slot == 0L else slot == date.dayOfMonth.toLong()
+    if (!validSlot || id!="salary:$month:$slot" || nature!=PlanNature.INCOME || version!=1L ||
+     date !in PlanningMath.salaryDates(YearMonth.parse(month),s)) fail("Invalid salary occurrence")
+   }
+   id.startsWith("extra:") -> if(id!="extra:$templateId" || nature!=PlanNature.INCOME || version!=1L || slot!=0L) fail("Invalid extraordinary income identity")
+   templateId.startsWith("recurring-extra:") -> {
+    val revision = extraIncomes.find { it.id == templateId.removePrefix("recurring-extra:") && it.version.toLong() == version }
+     ?: fail("Invalid recurring income revision")
+    val date = LocalDate.parse(o.getString("dueDate"))
+    if (revision.paused || date.toString() < revision.effectiveDate || slot != date.dayOfMonth.toLong() ||
+     id!="$templateId:$month:$slot" || nature!=PlanNature.INCOME || revision.currency!=currency ||
+     date !in PlanningMath.incomeDates(YearMonth.parse(month),revision.frequency,LocalDate.parse(revision.anchorDate))) fail("Invalid recurring income occurrence")
+   }
+   else -> {
+    val t=templates.find { it.id==templateId && it.version.toLong()==version } ?: fail("Unknown occurrence revision")
+    if(slot !in 0..1 || t.currency!=currency || t.nature!=nature || id!="$templateId:$month:$slot") fail("Invalid occurrence identity")
+   }
+  }
   ref(o.nullText("suggestedAccountId"),currency,nature in setOf(PlanNature.FIXED,PlanNature.SUBSCRIPTION))
   var netPaid=java.math.BigInteger.ZERO
   o.getJSONArray("paymentIds").strings().forEach { payment ->
@@ -373,7 +495,31 @@ internal fun canonicalPlanning(value:Any?):Any = when(value) {
  is String,is Boolean,is Number -> value
  is Enum<*> -> value.name
  is Iterable<*> -> JSONArray(value.map(::canonicalPlanning))
- else -> JSONObject().apply { put("commandType",value.javaClass.name); value.javaClass.declaredFields.filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }.sortedBy { it.name }.forEach { field -> field.isAccessible=true; if (!(value is Debt && field.name == "intervalMonths" && value.intervalMonths == 1) && !(value is ReminderPreference && field.name == "additionalDays" && value.additionalDays.isEmpty()) && !(value is RecurringTemplate && field.name == "category" && value.category == null)) put(field.name,canonicalPlanning(field.get(value))) } }
+ else -> JSONObject().apply {
+  put("commandType",value.javaClass.name)
+  value.javaClass.declaredFields.filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }.sortedBy { it.name }.forEach { field ->
+   field.isAccessible = true
+   val omit = when (value) {
+    is Debt -> when (field.name) {
+     "intervalMonths" -> value.intervalMonths == 1
+     "maturityDate" -> field.get(value) == null
+     "estimateTermFromBalance" -> field.get(value) == false
+     "estimatedOpeningPrincipal" -> field.get(value) == false
+     "installmentChargesMinor" -> field.get(value) == null
+     else -> false
+    }
+    is SalaryVersion -> when (field.name) {
+     "frequency" -> value.frequency == IncomeFrequency.MONTHLY
+     "anchorDate" -> value.anchorDate == null
+     else -> false
+    }
+    is ReminderPreference -> field.name == "additionalDays" && value.additionalDays.isEmpty()
+    is RecurringTemplate -> field.name == "category" && value.category == null
+    else -> false
+   }
+   if (!omit) put(field.name,canonicalPlanning(field.get(value)))
+  }
+ }
 }
 private fun validateCategories(plan:PeriodPlan, normalized: Boolean = false) {
  val rows=plan.rows.filter { it.nature in setOf(PlanNature.VARIABLE_NEED,PlanNature.FREE) }

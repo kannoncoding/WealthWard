@@ -104,6 +104,33 @@ class F07UiTest {
   assertEquals(1000000L, posted.operations.sumOf { it.expenseMinor })
  }
 
+ @Test fun mortgageMaturityReopensWithTheExactDayAndCanBeChanged() {
+  open("f07debt")
+  text("Nombre de la deuda", "Hipoteca de prueba")
+  click("Préstamo personal")
+  click("Hipoteca")
+  ui.selectCalendarDate("Fecha de apertura", "2027-01-01")
+  ui.selectCalendarDate("Primera cuota", "2027-02-15")
+  text("Monto por cuota", "10000")
+  ui.selectCalendarDate("Fecha de fin", "2027-05-19")
+  save()
+  val first = runBlocking { repo.snapshot("2027-05").debts.single().debt }
+  assertEquals("2027-05-19", first.maturityDate)
+  assertEquals(4, first.remainingMonths)
+  assertEquals(4_000_000L, first.openingMinor)
+  assertTrue(first.estimatedOpeningPrincipal)
+
+  open("f07maturity", first.id)
+  val display = java.time.LocalDate.parse(checkNotNull(first.maturityDate)).format(
+   java.time.format.DateTimeFormatter.ofLocalizedDate(java.time.format.FormatStyle.MEDIUM)
+    .withLocale(AppLanguage.current.locale),
+  )
+  ui.onNodeWithContentDescription("Fecha de fin").assert(hasText(display))
+  ui.selectCalendarDate("Fecha de fin", "2027-07-23")
+  save()
+  assertEquals("2027-07-23", runBlocking { repo.snapshot("2027-07").debts.single().debt.maturityDate })
+ }
+
  @Test fun quarterlyDebtUsesOnlyScheduledDatesThroughEndDate() {
   open("f07debt")
   text("Nombre de la deuda", "Préstamo trimestral")
@@ -130,7 +157,7 @@ class F07UiTest {
   save()
   assertEquals(0L, runBlocking { repo.snapshot(month) }.savings.single().fundedMinor)
   click("Aportar · Fondo de prueba")
-  text("Importe", "30000")
+  text("Monto/Importe", "30000")
   ui.selectCalendarDate("Fecha del aporte o movimiento", "2027-02-10")
   save()
   val funded = runBlocking { ledger.snapshot() }.accounts.filter { it.kind == "CASH" }
@@ -141,11 +168,11 @@ class F07UiTest {
   click("Aportar · Fondo de prueba")
   ui.onNodeWithContentDescription("Cuenta de origen").performScrollTo().performClick()
   click("Otra cuenta · CRC")
-  text("Importe", "20000")
+  text("Monto/Importe", "20000")
   ui.selectCalendarDate("Fecha del aporte o movimiento", "2027-02-11")
   save()
   click("Retirar · Fondo de prueba")
-  text("Importe", "10000")
+  text("Monto/Importe", "10000")
   ui.selectCalendarDate("Fecha del aporte o movimiento", "2027-02-12")
   save()
   val final = runBlocking { repo.snapshot(month) }.savings.single()

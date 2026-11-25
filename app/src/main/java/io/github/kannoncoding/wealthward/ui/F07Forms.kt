@@ -3,9 +3,12 @@ package io.github.kannoncoding.wealthward.ui
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import io.github.kannoncoding.wealthward.domain.*
+import java.math.BigDecimal
+import java.time.LocalDate
 
 internal fun f07Title(action: String) = when (action) {
  "f07debt" -> localized("Crear deuda a plazo")
+ "f07maturity" -> localized("Editar vencimiento")
  "f07verify" -> localized("Verificar saldo del acreedor")
  "f07installment" -> localized("Registrar cuota de deuda")
  "f07extra" -> localized("Registrar abono extraordinario")
@@ -32,7 +35,7 @@ internal fun f07Title(action: String) = when (action) {
  val f = Fields(draft, busy)
  val cash = ledger.accounts.filter { !it.archived && it.kind == "CASH" }
  val command = when (action) {
-  "f07debt", "f07verify", "f07installment", "f07extra" -> DebtFields(action, subject, plan, cash, f)
+  "f07debt", "f07maturity", "f07verify", "f07installment", "f07extra" -> DebtFields(action, subject, plan, cash, f)
   "f07goal", "f07contribute", "f07withdraw", "f07reallocate", "f07transfer", "f07external" -> SavingFields(action, subject, month, plan, cash, f)
   "f07project", "f07item", "f07projectlink", "f07projectpay" -> ProjectFields(action, subject, plan, ledger, cash, f)
   "f07statement", "f07statementpay", "f07evidence" -> CreditFields(action, subject, plan, ledger, f)
@@ -53,45 +56,93 @@ internal fun f07Title(action: String) = when (action) {
   f.text("group", localized("Grupo visual"), "Deudas")
   val currency = f.currency()
   val kind = f.choice("kind", localized("Tipo financiero"), DebtKind.entries.map { it.name to debtKindName(it) })
-  f.text("opening", localized("Saldo total pendiente de la deuda"), numeric = true)
+  val mortgage = kind == DebtKind.MORTGAGE.name
+  val endModes = listOf("COUNT" to localized("Cantidad de cuotas"), "DATE" to localized("Fecha de fin"))
+  val endMode = f.choice("endMode", localized("Cómo termina la deuda"),
+   if (mortgage) endModes + ("BALANCE" to localized("Estimar con saldo y cuota")) else endModes,
+   if (mortgage) "DATE" else "COUNT")
+  val canEstimateOpening = mortgage && endMode == "DATE"
+  f.text("opening", if (canEstimateOpening) localized("Saldo pendiente (opcional si deseas estimarlo)") else localized("Saldo total pendiente de la deuda"), numeric = true)
   f.calendar("openingDate", localized("Fecha de apertura"), today())
   f.calendar("due", localized("Primera cuota"), today())
   val interval = f.choice("frequency", localized("Frecuencia de cobro"), listOf("1" to localized("Mensual"), "2" to localized("Cada dos meses"), "3" to localized("Trimestral"), "6" to localized("Semestral"), "12" to localized("Anual"))).toInt()
   f.text("installment", localized("Monto por cuota"), numeric = true)
-  val endMode = f.choice("endMode", localized("Cómo termina la deuda"), listOf("COUNT" to localized("Cantidad de cuotas"), "DATE" to localized("Fecha de fin")))
+  if (mortgage) f.text("installmentCharges", localized("Cargos incluidos en cada cuota (opcional)"), numeric = true)
   if (endMode == "COUNT") f.text("months", localized("Cuotas restantes"), numeric = true)
-  else f.calendar("endDate", localized("Fecha de fin"))
+  if (endMode == "DATE") f.calendar("endDate", localized("Fecha de fin"))
   val amortization = if (interval != 1) DebtAmortization.MANUAL else DebtAmortization.valueOf(f.choice("amortization", localized("Modo de amortización"),
    listOf(DebtAmortization.MANUAL.name to localized("Seguimiento manual"), DebtAmortization.FIXED_MONTHLY.name to localized("Tasa fija mensual"))))
   f.text("rate", if (amortization == DebtAmortization.MANUAL) localized("Interés anual aproximado % (opcional)") else localized("Tasa anual confirmada en %"), numeric = true)
-  f.text("final", localized("Última cuota si es distinta (opcional)"), numeric = true)
+  if (endMode != "BALANCE") f.text("final", localized("Última cuota si es distinta (opcional)"), numeric = true)
   val policy = f.choice("policy", localized("Condiciones para abonos extras"), ExtraPaymentPolicy.entries.map { it.name to extraPolicyName(it) }, ExtraPaymentPolicy.MANUAL.name)
   val account = f.choice("account", localized("Cuenta de pago sugerida"),
    listOf("" to localized("Elegir al pagar")) + cash.filter { it.currency == currency }.map { it.id to it.name })
+  debtEstimateExplanation(endMode, amortization)?.let { Text(it) }
+  if (canEstimateOpening) {
+   Text(localized("Si dejas el saldo pendiente vacío, se guardará un saldo de apertura estimado según las cuotas, la amortización y los cargos indicados."))
+   Text(debtOpeningAssumption(amortization))
+  }
   Text(localized("Conserva el grupo visual que usas. La apertura registra principal pendiente y las cuotas aparecen en el calendario."))
   return {
    val id = f.draft.request()
-   val due = java.time.LocalDate.parse(f.date("due"))
-   val count = if (endMode == "COUNT") f.positiveInt("months", localized("cantidad de cuotas")) else {
-    val end = java.time.LocalDate.parse(f.date("endDate"))
-    require(end >= due) { localized("La fecha de fin debe ser igual o posterior a la primera cuota.") }
-    val months = java.time.temporal.ChronoUnit.MONTHS.between(java.time.YearMonth.from(due), java.time.YearMonth.from(end))
-    val index = months / interval
-    val last = due.plusMonths(index * interval)
-    Math.toIntExact(index + if (last <= end) 1 else 0)
+   val enteredOpening = if (canEstimateOpening && f.value("opening").isBlank()) null else f.amount("opening", localized("principal"))
+   val payment = f.amount("installment", localized("cuota"))
+   val finalPayment = if (endMode == "BALANCE") null else f.optionalAmount("final", localized("última cuota"))
+   val charges = if (mortgage && f.value("installmentCharges").isNotBlank())
+    f.amount("installmentCharges", localized("cargos"), allowZero = true) else null
+   val chargeAmount = charges ?: 0L
+   require(chargeAmount < payment && (finalPayment == null || chargeAmount < finalPayment)) {
+    AppLanguage.current.backendMessage("Recurring charges must be less than the installment and final installment.")
    }
-   val rate = f.value("rate").trim().ifBlank { null }
+   val netPayment = payment - chargeAmount
+   val due = LocalDate.parse(f.date("due"))
+   val maturity = if (endMode == "DATE") f.date("endDate", "") else null
+   val rate = f.value("rate").trim().takeIf { it.isNotEmpty() }?.let {
+    normalizedDebtRate(it) ?: throw IllegalArgumentException(AppLanguage.current.backendMessage(DEBT_RATE_ERROR))
+   }
    require(amortization == DebtAmortization.MANUAL || rate != null) { localized("Completa la tasa anual confirmada.") }
+   val appliedRate = rate.takeIf { amortization == DebtAmortization.FIXED_MONTHLY }
+   val limit = debtInstallmentLimit(interval)
+   val count = when (endMode) {
+    "DATE" -> {
+     val end = LocalDate.parse(maturity!!)
+     require(end >= due) { AppLanguage.current.backendMessage(DEBT_DATE_ERROR) }
+     val installments = installmentsThrough(due, end, interval)
+     require(installments in 1L..limit.toLong()) { AppLanguage.current.backendMessage(DEBT_TERM_LIMIT) }
+     installments.toInt()
+    }
+    "BALANCE" -> {
+     val opening = checkNotNull(enteredOpening)
+     require(appliedRate == null || debtMonthInterest(opening, appliedRate) < BigDecimal.valueOf(netPayment)) {
+      AppLanguage.current.backendMessage(DEBT_PAYMENT_INTEREST)
+     }
+     debtPayoff(opening, netPayment, appliedRate, limit)?.installments
+      ?: throw IllegalArgumentException(AppLanguage.current.backendMessage(DEBT_TERM_LIMIT))
+    }
+    else -> f.positiveInt("months", localized("cantidad de cuotas"))
+   }
+   val opening = enteredOpening ?: try {
+    debtPrincipalFromPayments(netPayment, (finalPayment ?: payment) - chargeAmount, count, appliedRate)
+   } catch (_: ArithmeticException) {
+    throw IllegalArgumentException(localized("El saldo estimado excede el importe admitido. Revisa la cuota y la fecha de fin."))
+   }
+   require(opening > 0) { localized("El saldo estimado debe ser positivo. Revisa la cuota, la tasa y los cargos.") }
    F07Command.CreateDebt(id, Debt(id, f.required("name", localized("nombre")), f.required("group", localized("grupo visual")), currency, DebtKind.valueOf(kind),
-    f.amount("opening", "principal"), f.date("openingDate"), f.date("due"), f.amount("installment", localized("cuota")),
-    count, rate,
-    f.optionalAmount("final", localized("última cuota")), ExtraPaymentPolicy.valueOf(policy), account.ifBlank { null }, amortization, interval))
+    opening, f.date("openingDate"), due.toString(), payment,
+    count, rate?.toPlainString(),
+    finalPayment, ExtraPaymentPolicy.valueOf(policy), account.ifBlank { null },
+    amortization, interval, maturity, endMode == "BALANCE", enteredOpening == null, charges))
   }
  }
  val installmentMonth = subject.substringBefore("/").takeIf { action == "f07installment" }
  val status = plan.debts.find { it.debt.id == subject.substringAfter("/") } ?: return null
  val debt = status.debt
  Text(localized("{0} · {1} · Principal registrado {2}", debt.name, debt.currency, money(status.principalMinor, debt.currency)))
+ if (action == "f07maturity") {
+  f.calendar("endDate", localized("Fecha de fin"), debt.maturityDate.orEmpty())
+  debtEstimateExplanation("DATE", debt.amortization)?.let { Text(it) }
+  return { F07Command.UpdateDebtMaturity(f.draft.request(), debt.id, f.date("endDate", debt.maturityDate.orEmpty())) }
+ }
  if (action == "f07verify") {
   Text(localized("El principal registrado se actualizará al saldo que confirmes. Se conservará la referencia de la verificación."))
   f.text("observed", localized("Principal informado por el acreedor"), numeric = true)
@@ -175,7 +226,7 @@ internal fun f07Title(action: String) = when (action) {
  val target = if (type == SavingAction.REALLOCATE) f.choice("goal", localized("Meta de destino"),
   plan.savings.filter { it.goal.id != goal.id && it.goal.currency == goal.currency }.map { it.goal.id to it.goal.name }) else null
  if (type == SavingAction.EXTERNAL) f.text("recipient", localized("Beneficiario externo"))
- f.text("amount", localized("Importe"), numeric = true)
+ f.text("amount", localized("Monto/Importe"), numeric = true)
  f.calendar("date", localized("Fecha del aporte o movimiento"), today())
  val confirmed = when (type) {
   SavingAction.TRANSFER -> f.check("confirmed", localized("Confirmo la transferencia real entre mis cuentas"))

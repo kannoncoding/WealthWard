@@ -7,6 +7,7 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.temporal.ChronoUnit
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** Commitments and all their financial effects share one Room transaction. */
@@ -97,6 +98,17 @@ class F07Repository(private val db: WealthDatabase) {
                 if (dao.accounts().any { it.id == accountId }) f07Invalid("A debt with this identity already exists")
                 dao.insertAccount(AccountEntity(accountId, debt.name, debt.currency.name, "TERM_DEBT", -debt.openingMinor))
                 data.f07Add("debts", row(debt, command.requestId))
+            }
+            is F07Command.UpdateDebtMaturity -> {
+                val debt = data.f07Row("debts", command.debtId).debt().withMaturity(command.maturityDate)
+                validateDebt(debt, dao.accounts())
+                val lastDueMonth = YearMonth.from(LocalDate.parse(debt.firstDueDate))
+                    .plusMonths((debt.remainingMonths - 1L) * debt.intervalMonths).toString()
+                if (data.debtEntries(debt.id).any { !it.voided && (it.payment?.installmentMonth ?: "") > lastDueMonth }) {
+                    f07Invalid("Maturity date must include the installments already recorded.")
+                }
+                val edits = data.optJSONArray("debtMaturityEdits") ?: JSONArray().also { data.put("debtMaturityEdits", it) }
+                edits.put(row(command, command.requestId))
             }
             is F07Command.PayDebt -> {
                 val payment = command.payment
@@ -200,7 +212,7 @@ class F07Repository(private val db: WealthDatabase) {
 }
 
 private fun JSONObject.debtStatuses(): List<DebtStatus> = f07Rows("debts").map { row ->
-    val debt = row.debt()
+    val debt = debtWithMaturity(row)
     debtStatus(debt, debtEntries(debt.id))
 }
 
@@ -212,19 +224,46 @@ private fun netProjectPayment(id: String, operations: Map<String, OperationDetai
 }
 
 internal fun validateDebt(debt: Debt, accounts: List<AccountEntity>) {
-    val rate = debt.annualRatePercent?.let {
-        it.toBigDecimalOrNull() ?: f07Invalid("Invalid annual interest rate")
+    if (debt.id.isBlank() || debt.name.isBlank()) f07Invalid("Enter the name of the debt.")
+    if (debt.group.isBlank()) f07Invalid("Enter the display group.")
+    if (debt.openingMinor <= 0) f07Invalid("Opening principal must be positive.")
+    if (debt.installmentMinor <= 0) f07Invalid("Installment amount must be positive.")
+    if (debt.finalInstallmentMinor?.let { it <= 0 } == true) f07Invalid("Final installment must be positive.")
+    if (debt.intervalMonths !in 1..12) f07Invalid("Choose a valid payment frequency.")
+    if (debt.remainingMonths !in 1..debtInstallmentLimit(debt.intervalMonths)) f07Invalid(DEBT_TERM_LIMIT)
+    val charges = debt.installmentChargesMinor ?: 0
+    if (charges !in 0L until debt.installmentMinor || debt.finalInstallmentMinor?.let { charges >= it } == true) {
+        f07Invalid("Recurring charges must be less than the installment and final installment.")
     }
-    val open = LocalDate.parse(debt.openingDate)
-    val due = LocalDate.parse(debt.firstDueDate)
-    if (debt.id.isBlank() || debt.name.isBlank() || debt.group.isBlank() || debt.openingMinor <= 0 ||
-        debt.installmentMinor <= 0 || debt.intervalMonths !in 1..12 ||
-        (debt.remainingMonths.toLong() - 1) * debt.intervalMonths > 1199 ||
-        (debt.intervalMonths != 1 && debt.amortization == DebtAmortization.FIXED_MONTHLY) || debt.remainingMonths !in 1..600 || debt.finalInstallmentMinor?.let { it <= 0 } == true ||
-        (rate == null && debt.amortization == DebtAmortization.FIXED_MONTHLY) ||
-        (rate != null && (rate.signum() < 0 || rate > BigDecimal("1000") || rate.scale() !in -3..12)) || due < open)
-        f07Invalid("Enter valid term debt details")
-    debt.suggestedAccountId?.let { validateCommitmentAccount(it, debt.currency, "CASH", accounts) }
+    val payment = debt.installmentMinor - charges
+    val rate = debt.annualRatePercent?.let { normalizedDebtRate(it) ?: f07Invalid(DEBT_RATE_ERROR) }
+    val open = debtDate(debt.openingDate, "Choose a valid opening date.")
+    val due = debtDate(debt.firstDueDate, "Choose a valid first installment date.")
+    if (due < open) f07Invalid("First installment must be on or after the opening date.")
+    if (debt.amortization == DebtAmortization.FIXED_MONTHLY) {
+        if (debt.intervalMonths != 1) f07Invalid("Fixed-rate amortization requires monthly installments.")
+        if (rate == null) f07Invalid("Enter the confirmed annual rate.")
+        if ((debt.maturityDate != null || debt.estimateTermFromBalance) &&
+            debtMonthInterest(debt.openingMinor, rate) >= BigDecimal.valueOf(payment)) {
+            f07Invalid(DEBT_PAYMENT_INTEREST)
+        }
+    }
+    debt.maturityDate?.let { date ->
+        if (debt.estimateTermFromBalance || debt.withMaturity(date).remainingMonths != debt.remainingMonths) {
+            f07Invalid("Installment count must match the maturity date and payment frequency.")
+        }
+    }
+    if (debt.estimateTermFromBalance) {
+        val appliedRate = rate.takeIf { debt.amortization == DebtAmortization.FIXED_MONTHLY }
+        if (debtPayoff(debt.openingMinor, payment, appliedRate, debtInstallmentLimit(debt.intervalMonths))?.installments != debt.remainingMonths) {
+            f07Invalid(DEBT_TERM_LIMIT)
+        }
+    }
+    debt.suggestedAccountId?.let { id ->
+        if (accounts.none { it.id == id && it.currency == debt.currency.name && it.kind == "CASH" }) {
+            f07Invalid("Choose a payment account in the debt currency.")
+        }
+    }
 }
 
 internal fun validateDebtPayment(payment: DebtPayment, debt: Debt, remaining: Long, accounts: List<AccountEntity>) {

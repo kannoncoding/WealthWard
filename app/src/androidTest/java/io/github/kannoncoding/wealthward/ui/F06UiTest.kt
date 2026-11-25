@@ -104,7 +104,7 @@ class F06UiTest {
   val occurrence=snapshot().occurrences.single()
   assertEquals("2027-02-26",occurrence.dueDate)
   open("f06pay",occurrence.id)
-  text("Importe real recibido o pagado","1500"); ui.selectCalendarDate("Fecha real del movimiento","2027-02-26"); click("Guardar")
+  text("Monto/Importe real recibido o pagado","1500"); ui.selectCalendarDate("Fecha real del movimiento","2027-02-26"); click("Guardar")
   ui.onNodeWithText("Confirma el movimiento real",substring=true).assertExists()
   assertTrue(runBlocking { ledger.snapshot() }.operations.isEmpty())
   click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
@@ -114,8 +114,8 @@ class F06UiTest {
  }
  @Test fun t06ConfirmActualThenPayPartAndRestWithoutDuplicateExpense() {
   seedTemplate(); refresh(); val id=snapshot().occurrences.single().id
-  open("f06confirm",id); text("Importe real total","1200"); click("Guardar"); saved()
-  open("f06pay",id); text("Importe real recibido o pagado","400"); ui.selectCalendarDate("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
+  open("f06confirm",id); text("Monto/Importe real total","1200"); click("Guardar"); saved()
+  open("f06pay",id); text("Monto/Importe real recibido o pagado","400"); ui.selectCalendarDate("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
   assertEquals(80000L,snapshot().occurrences.single().pendingMinor)
   open("f06pay",id); ui.selectCalendarDate("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
   assertEquals(0L,snapshot().occurrences.single().pendingMinor)
@@ -125,12 +125,12 @@ class F06UiTest {
   seedTemplate(); refresh()
   val item = snapshot().occurrences.single()
   open("f06pay",item.id)
-  text("Importe real recibido o pagado","0")
+  text("Monto/Importe real recibido o pagado","0")
   click("Confirmo que este movimiento realmente ocurrió")
   click("Guardar")
   assertEquals(item.pendingMinor,snapshot().occurrences.single().pendingMinor)
   click("Este pago ya se había descontado de la cuenta seleccionada")
-  ui.onNodeWithText("Importe a descontar: 0.", substring = true).assertExists()
+  ui.onNodeWithText("Monto/Importe a descontar: 0.", substring = true).assertExists()
   click("Guardar"); saved()
   val paid = snapshot().occurrences.single()
   assertEquals(0L,paid.pendingMinor)
@@ -141,11 +141,11 @@ class F06UiTest {
  }
  @Test fun t16FebruaryClampsAndRepeatedOpenRetainsHistoryAfterRevision() {
   open("f06template","FIXED")
-  text("Nombre de la obligación","Cuota de prueba"); text("Importe propio estimado","1000"); text("Día nominal (1–31)","31"); text("Motivo de esta revisión","Alta de prueba"); click("Guardar"); saved()
+  text("Nombre de la obligación","Cuota de prueba"); text("Monto/Importe propio estimado","1000"); text("Día nominal (1–31)","31"); text("Motivo de esta revisión","Alta de prueba"); click("Guardar"); saved()
   runBlocking { repeat(3) { repo.execute(F06Command.OpenPeriod("open-$it","2027-02")) } }; refresh()
   val item=snapshot().occurrences.single(); assertEquals("2027-02-28",item.dueDate)
-  open("f06pay",item.id); text("Importe real recibido o pagado","100"); ui.selectCalendarDate("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
-  open("f06template",item.templateId); text("Vigente desde · AAAA-MM","2027-03"); text("Importe propio estimado","2000"); text("Motivo de esta revisión","Revisión futura"); click("Guardar"); saved()
+  open("f06pay",item.id); text("Monto/Importe real recibido o pagado","100"); ui.selectCalendarDate("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
+  open("f06template",item.templateId); text("Vigente desde · AAAA-MM","2027-03"); text("Monto/Importe propio estimado","2000"); text("Motivo de esta revisión","Revisión futura"); click("Guardar"); saved()
   runBlocking { repo.execute(F06Command.OpenPeriod("march","2027-03")) }
   val rows=snapshot().occurrences
   assertEquals(2,rows.size); assertEquals(100000L,rows.first { it.nominalMonth=="2027-02" }.expectedMinor)
@@ -160,7 +160,7 @@ class F06UiTest {
   }
   refresh(); ui.runOnIdle { cash.value=runBlocking { ledger.snapshot() } }
   val id=snapshot().occurrences.single().id
-  open("release"); text("Importe a liberar","1000"); click("Guardar"); saved()
+  open("release"); text("Monto/Importe a liberar","1000"); click("Guardar"); saved()
   assertEquals(100000L,snapshot().occurrences.single().pendingMinor)
   assertEquals(0L,runBlocking { ledger.snapshot() }.accounts.single().reservedMinor)
   open("f06pay",id); ui.selectCalendarDate("Fecha real del movimiento","2027-02-28"); click("Confirmo que este movimiento realmente ocurrió"); click("Guardar"); saved()
@@ -169,8 +169,8 @@ class F06UiTest {
   assertEquals(49900000L,runBlocking { ledger.snapshot() }.accounts.single().balanceMinor)
  }
  @Test fun householdOnlyOwnShareIsSavedAndFuturePauseRetainsOriginal() {
-  open("f06template","FIXED"); text("Nombre de la obligación","Hogar compartido"); text("Importe propio estimado","1"); click("Es un gasto compartido del hogar")
-  text("Total del hogar","3000"); text("Mi importe fijo","1200"); text("Motivo de esta revisión","Mi parte acordada"); click("Guardar"); saved()
+  open("f06template","FIXED"); text("Nombre de la obligación","Hogar compartido"); text("Monto/Importe propio estimado","1"); click("Es un gasto compartido del hogar")
+  text("Total del hogar","3000"); text("Mi Monto/Importe fijo","1200"); text("Motivo de esta revisión","Mi parte acordada"); click("Guardar"); saved()
   val template=snapshot().templates.single(); assertEquals(120000L,template.minor); assertEquals(300000L,template.householdTotalMinor)
   open("f06template",template.id); text("Vigente desde · AAAA-MM","2027-03"); click("Pausar desde la vigencia elegida"); text("Motivo de esta revisión","Pausa futura"); click("Guardar"); saved()
   runBlocking { repo.execute(F06Command.OpenPeriod("feb","2027-02")); repo.execute(F06Command.OpenPeriod("march","2027-03")) }

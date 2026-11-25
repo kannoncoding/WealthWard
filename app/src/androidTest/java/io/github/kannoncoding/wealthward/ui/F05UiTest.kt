@@ -21,9 +21,6 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
-import java.time.LocalDate
-import java.time.format.DateTimeFormatter
-import java.time.format.FormatStyle
 
 /** Production forms with the real transactional Room boundary, using fictitious CRC only. */
 class F05UiTest {
@@ -64,36 +61,54 @@ class F05UiTest {
  private fun open(next: String, id: String = "") { ui.runOnIdle { action.value = next; subject.value = id; status.value = "" }; ui.waitForIdle() }
  private fun saved() { ui.waitUntil(10000) { status.value == "Guardado" }; ui.waitForIdle() }
  private fun snapshot() = runBlocking { repo.snapshot() }
- private fun expense() { text("Importe", "15000"); text("Comercio", "Comercio genérico"); text("Categoría", "Alimentos") }
+ private fun expense() { text("Monto/Importe", "15000"); text("Comercio", "Comercio genérico"); text("Categoría", "Alimentos") }
 
- @Test fun optionalPostingDateCanBeClearedAfterReopeningDraft() {
+ @Test fun postingDateIsHiddenAndCorrectionPreservesExistingAccountingDate() {
+  runBlocking {
+   repo.execute(F05Command.Record("existing", "a", "EXPENSE", 1000, "2026-02-09", "Comercio", "Alimentos", bookedDate = "2026-02-10"))
+   state.value = repo.snapshot()
+  }
   val label = localized("Fecha contabilizada (si difiere)")
-  val chosen = LocalDate.parse("2026-02-10")
-  val display = chosen.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(AppLanguage.current.locale))
-  ui.selectCalendarDate(label, chosen.toString())
-  ui.onNodeWithContentDescription(label).assertTextContains(display)
-  click("Cancelar")
-  open("expense")
-  ui.onNodeWithContentDescription(label).assertTextContains(display).performScrollTo().performClick()
-  ui.onNode(hasText(localized("Cancelar")) and hasAnyAncestor(isDialog())).performClick()
-  ui.onNodeWithContentDescription(label).assertTextContains(display).performClick()
-  ui.onNodeWithText(localized("Quitar fecha")).performClick()
-  ui.onNodeWithContentDescription(label).assertTextContains(localized("Elegir fecha"))
+  ui.onNodeWithContentDescription(label).assertDoesNotExist()
+  open("correct", "existing")
+  ui.onNodeWithContentDescription(label).assertDoesNotExist()
+  text("Monto/Importe", "20")
+  text("Motivo de la corrección", "Corrección de prueba")
+  click("Guardar"); saved()
+  val operations = snapshot().operations
+  assertEquals("2026-02-10", operations.single { it.id == "existing" }.bookedDate)
+  assertEquals("2026-02-10", operations.single { it.id.endsWith(":replacement") }.bookedDate)
  }
-
+ @Test fun bankProductCombinesOnlyMatchingAccountKindsInDifferentCurrencies() {
+  runBlocking {
+   repo.execute(F05Command.CreateAccount("setup-usd", "usd", "deposit-usd", "Cuenta USD", Currency.USD, "CASH", 12500, "2026-01-01"))
+   repo.execute(F05Command.CreateAccount("setup-credit", "credit", "credit-usd", "Tarjeta USD", Currency.USD, "LIABILITY", 0, "2026-01-01"))
+   state.value = repo.snapshot()
+  }
+  open("account")
+  text("Nombre de la cuenta", "Cuenta CRC vinculada")
+  ui.onNodeWithContentDescription("Agrupar en producto").performScrollTo().performClick()
+  ui.onNodeWithText("Cuenta de prueba · CRC").assertDoesNotExist()
+  ui.onNodeWithText("Tarjeta USD · USD").assertDoesNotExist()
+  ui.onNodeWithText("Cuenta USD · USD").performClick()
+  click("Guardar"); saved()
+  val accounts = snapshot().accounts
+  assertEquals("deposit-usd", accounts.single { it.name == "Cuenta CRC vinculada" }.productId)
+  assertEquals(12500L, accounts.single { it.id == "usd" }.balanceMinor)
+ }
  @Test fun validationAndCancelRetainDraftWithoutPosting() {
   expense()
   click("Añadir desglose")
   text("Categoría del desglose 1", "Alimentos")
-  text("Importe del desglose 1", "14999")
+  text("Monto/Importe del desglose 1", "14999")
   click("Guardar")
   ui.onNodeWithText("La suma del desglose", substring = true).assertExists()
   assertTrue(snapshot().operations.isEmpty())
   click("Cancelar")
   open("expense")
-  ui.onNodeWithContentDescription("Importe").assertTextContains("15000")
-  ui.onNodeWithContentDescription("Importe del desglose 1").assertTextContains("14999")
-  text("Importe del desglose 1", "15000")
+  ui.onNodeWithContentDescription("Monto/Importe").assertTextContains("15000")
+  ui.onNodeWithContentDescription("Monto/Importe del desglose 1").assertTextContains("14999")
+  text("Monto/Importe del desglose 1", "15000")
   click("Guardar"); saved()
   assertEquals(1, snapshot().operations.size)
  }
@@ -101,7 +116,7 @@ class F05UiTest {
  @Test fun t01T02T04AndT17ThroughProductionForms() {
   open("reserve")
   text("Nombre del propósito", "Reserva general")
-  text("Importe a reservar", "460000")
+  text("Monto/Importe a reservar", "460000")
   click("Guardar"); saved()
   var a = snapshot().accounts.first { it.id == "a" }
   assertEquals(50000000L, a.balanceMinor); assertEquals(46000000L, a.reservedMinor); assertEquals(4000000L, a.unassignedMinor)
@@ -111,11 +126,11 @@ class F05UiTest {
   val operation = snapshot().operations.last { it.type == "EXPENSE" }
   open("redistribute")
   text("Nombre del propósito", "Reserva nueva")
-  text("Importe a reservar", "20000")
+  text("Monto/Importe a reservar", "20000")
   click("Guardar"); saved()
   assertEquals(48500000L, snapshot().accounts.first { it.id == "a" }.balanceMinor)
   open("refund", operation.id)
-  text("Importe del reembolso parcial", "5000")
+  text("Monto/Importe del reembolso parcial", "5000")
   text("Motivo obligatorio", "Devolución parcial verificada")
   click("Confirmo el reembolso y su restitución de reserva")
   click("Guardar"); saved()
@@ -125,12 +140,12 @@ class F05UiTest {
 
  @Test fun t03AtomicTransferAndWithdrawalAndT10NoImplicitAdjustment() {
   open("transfer")
-  text("Importe real de salida", "50000")
+  text("Monto/Importe real de salida", "50000")
   click("Confirmo que la transferencia o pago ocurrió")
   click("Guardar"); saved()
   assertEquals(50000000L, snapshot().accounts.sumOf { it.balanceMinor })
   open("withdraw")
-  text("Importe real de salida", "10000")
+  text("Monto/Importe real de salida", "10000")
   click("Confirmo que la transferencia o pago ocurrió")
   click("Guardar"); saved()
   assertEquals(50000000L, snapshot().accounts.sumOf { it.balanceMinor })
@@ -148,8 +163,8 @@ class F05UiTest {
  }
 
  @Test fun independentT04FundsEmergencyWithoutChangingBank() {
-  open("reserve"); text("Nombre del propósito", "Reserva original"); text("Importe a reservar", "460000"); click("Guardar"); saved()
-  open("reserve"); text("Nombre del propósito", "Emergencia"); text("Importe a reservar", "20000"); click("Guardar"); saved()
+  open("reserve"); text("Nombre del propósito", "Reserva original"); text("Monto/Importe a reservar", "460000"); click("Guardar"); saved()
+  open("reserve"); text("Nombre del propósito", "Emergencia"); text("Monto/Importe a reservar", "20000"); click("Guardar"); saved()
   val account = snapshot().accounts.first { it.id == "a" }
   assertEquals(50000000L, account.balanceMinor)
   assertEquals(48000000L, account.reservedMinor)
@@ -158,15 +173,15 @@ class F05UiTest {
  }
 
  @Test fun t17PartialRefundRestoresOnlyTheConsumedPurpose() {
-  open("reserve"); text("Nombre del propósito", "Reserva de alimentos"); text("Importe a reservar", "460000"); click("Guardar"); saved()
+  open("reserve"); text("Nombre del propósito", "Reserva de alimentos"); text("Monto/Importe a reservar", "460000"); click("Guardar"); saved()
   open("expense"); expense(); click("Añadir desglose")
-  text("Categoría del desglose 1", "Alimentos"); text("Importe del desglose 1", "15000")
+  text("Categoría del desglose 1", "Alimentos"); text("Monto/Importe del desglose 1", "15000")
   ui.onNodeWithContentDescription("Propósito del desglose 1").performScrollTo().performClick()
   click("Reserva de alimentos")
   click("Guardar"); saved()
   val purchase = snapshot().operations.first { it.type == "EXPENSE" }
   assertEquals(44500000L, snapshot().accounts.first { it.id == "a" }.reservedMinor)
-  open("refund", purchase.id); text("Importe del reembolso parcial", "5000"); text("Motivo obligatorio", "Devolución verificada")
+  open("refund", purchase.id); text("Monto/Importe del reembolso parcial", "5000"); text("Motivo obligatorio", "Devolución verificada")
   click("Confirmo el reembolso y su restitución de reserva"); click("Guardar"); saved()
   val result = snapshot()
   assertEquals(45000000L, result.accounts.first { it.id == "a" }.reservedMinor)

@@ -1,5 +1,11 @@
 package io.github.kannoncoding.wealthward.domain
 
+import java.math.BigDecimal
+import java.math.RoundingMode
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.temporal.ChronoUnit
+
 enum class DebtKind { PERSONAL_LOAN, INSTALLMENT, MORTGAGE, OTHER }
 enum class DebtAmortization { MANUAL, FIXED_MONTHLY }
 enum class ExtraPaymentPolicy { REDUCE_TERM, REDUCE_INSTALLMENT, MANUAL }
@@ -23,6 +29,10 @@ data class Debt(
     val suggestedAccountId: String? = null,
     val amortization: DebtAmortization = DebtAmortization.MANUAL,
     val intervalMonths: Int = 1,
+    val maturityDate: String? = null,
+    val estimateTermFromBalance: Boolean = false,
+    val estimatedOpeningPrincipal: Boolean = false,
+    val installmentChargesMinor: Long? = null,
 )
 
 data class DebtPayment(
@@ -50,6 +60,7 @@ data class DebtStatus(
     val payments: List<DebtPayment>,
     val projectedInstallmentMinor: Long?,
     val projectedRemainingMonths: Int?,
+    val projectedPayoffDate: String? = null,
 )
 data class SavingGoal(
     val id: String,
@@ -93,6 +104,7 @@ data class F07Snapshot(
 sealed interface F07Command {
     val requestId: String
     data class CreateDebt(override val requestId: String, val debt: Debt) : F07Command
+    data class UpdateDebtMaturity(override val requestId: String, val debtId: String, val maturityDate: String) : F07Command
     data class PayDebt(override val requestId: String, val payment: DebtPayment) : F07Command
     data class VoidDebtPayment(override val requestId: String, val paymentId: String, val reason: String) : F07Command
     data class VerifyBalance(override val requestId: String, val balance: CreditorBalance) : F07Command
@@ -105,6 +117,56 @@ sealed interface F07Command {
     data class SaveStatement(override val requestId: String, val statement: CreditStatement) : F07Command
     data class LinkStatementPayment(override val requestId: String, val statementId: String, val operationId: String) : F07Command
     data class LinkCreditEvidence(override val requestId: String, val evidence: CreditEvidence) : F07Command
+}
+
+internal const val DEBT_RATE_ERROR = "Enter an annual rate between 0 and 1000 percent with up to 12 decimal places."
+internal const val DEBT_DATE_ERROR = "Maturity date must be on or after the first installment."
+internal const val DEBT_TERM_LIMIT = "The term must fit within 600 installments and 100 years. Check the payment or maturity date."
+internal const val DEBT_PAYMENT_INTEREST = "The installment must exceed the first month's interest. Check the annual rate, principal and installment."
+
+internal fun normalizedDebtRate(value: String): BigDecimal? =
+    value.trim().replace(',', '.').toBigDecimalOrNull()?.takeIf {
+        it.signum() >= 0 && it <= BigDecimal("1000") && it.scale() in -3..12
+    }
+
+internal fun debtInstallmentLimit(intervalMonths: Int): Int = minOf(600, 1199 / intervalMonths + 1)
+
+internal fun installmentsThrough(first: LocalDate, maturity: LocalDate, intervalMonths: Int): Long {
+    val months = ChronoUnit.MONTHS.between(YearMonth.from(first), YearMonth.from(maturity))
+    val index = months / intervalMonths
+    return index + if (first.plusMonths(index * intervalMonths) <= maturity) 1 else 0
+}
+
+internal fun debtMonthInterest(principal: Long, annualRatePercent: BigDecimal): BigDecimal =
+    BigDecimal.valueOf(principal).multiply(annualRatePercent).divide(BigDecimal("1200"), 0, RoundingMode.HALF_UP)
+
+internal data class DebtPayoff(val installments: Int, val finalPaymentMinor: Long)
+
+internal fun debtPayoff(principal: Long, payment: Long, rate: BigDecimal?, limit: Int): DebtPayoff? {
+    var balance = principal
+    val monthlyRate = rate ?: BigDecimal.ZERO
+    for (installment in 1..limit) {
+        val interest = debtMonthInterest(balance, monthlyRate)
+        val reduction = BigDecimal.valueOf(payment).subtract(interest)
+        if (reduction.signum() <= 0) return null
+        if (reduction >= BigDecimal.valueOf(balance)) {
+            return DebtPayoff(installment, BigDecimal.valueOf(balance).add(interest).longValueExact())
+        }
+        balance -= reduction.longValueExact()
+    }
+    return null
+}
+
+internal fun debtPrincipalFromPayments(
+    payment: Long, finalPayment: Long, installments: Int, annualRate: BigDecimal?,
+): Long {
+    val rate = (annualRate ?: BigDecimal.ZERO).divide(BigDecimal("1200"), 24, RoundingMode.HALF_UP)
+    val discount = BigDecimal.ONE.add(rate)
+    var principal = BigDecimal.valueOf(finalPayment).divide(discount, 24, RoundingMode.HALF_UP)
+    repeat(installments - 1) {
+        principal = principal.add(BigDecimal.valueOf(payment)).divide(discount, 24, RoundingMode.HALF_UP)
+    }
+    return principal.setScale(0, RoundingMode.HALF_UP).longValueExact()
 }
 
 /** All inputs are native-currency minor units for the same planning month. */

@@ -62,7 +62,7 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
   Column {
    Text(label, style = MaterialTheme.typography.labelLarge)
    Box {
-    OutlinedButton(onClick = { expanded = true }, enabled = !busy && choices.isNotEmpty(), modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = label }) { Text(choices.find { it.first == selected }?.second ?: localized("Sin opciones elegibles")) }
+    OutlinedButton(onClick = { expanded = true }, enabled = !busy && choices.isNotEmpty(), colors = outlineActionColors(), modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = label }) { Text(choices.find { it.first == selected }?.second ?: localized("Sin opciones elegibles")) }
     DropdownMenu(expanded, { expanded = false }, modifier = Modifier.heightIn(max = 360.dp)) {
      choices.forEach { (id, title) -> DropdownMenuItem(text = { Text(title) }, onClick = { draft.set(key, id); expanded = false }, modifier = Modifier.heightIn(min = 48.dp)) }
     }
@@ -96,8 +96,17 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
    val kind = if (subtype != null) "CASH" else type
    if (subtype == CashAccountSubtype.OTHER) f.text("customTypeName", localized("Nombre del tipo de cuenta"))
    val currency = f.choice("currency", localized("Moneda nativa"), Currency.entries.map { it.name to it.name })
-   val eligibleProducts = snapshot.accounts.groupBy { it.productId }.filter { (_, accounts) -> accounts.all { it.kind == if (kind == "LIABILITY") "LIABILITY" else "CASH" } && accounts.none { it.currency.name == currency } && !accounts.first().productId.startsWith("cash") }
-   val product = if (kind != "PHYSICAL_CASH") f.choice("product", localized("Agrupar en producto"), listOf("new" to localized("Crear producto separado")) + eligibleProducts.map { (id, accounts) -> id to accounts.first().name.substringBefore(" · ") }) else "new"
+   val product = if (kind == "PHYSICAL_CASH") "new" else {
+    val compatibleProducts = snapshot.accounts.groupBy { it.productId }.filter { (id, accounts) ->
+     !id.startsWith("cash") && accounts.all { it.kind == kind && it.currency.name != currency }
+    }.map { (id, accounts) ->
+     val account = accounts.first()
+     id to "${account.name.substringBefore(" · ")} · ${account.currency}"
+    }
+    val choice = f.choice("product", localized("Agrupar en producto"), listOf("new" to localized("Crear producto separado")) + compatibleProducts)
+    Text(localized("Agrupa las cuentas cuando son el mismo producto bancario. Puedes vincular dos cuentas de depósito o dos saldos de una tarjeta, uno en CRC y otro en USD. Para otra cuenta en la misma moneda, crea un producto separado."))
+    choice
+   }
    f.text("opening", if (kind == "LIABILITY") localized("Deuda inicial confirmada (positiva)") else localized("Saldo inicial confirmado"), "0.00", true)
    f.calendar("date", localized("Fecha de apertura"), today())
    if (kind == "LIABILITY") f.text("limit", localized("Límite de crédito (no es efectivo)"), "0.00", true)
@@ -177,19 +186,18 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
    val funding = if (type == "CREDIT_PURCHASE" && !alreadyDeducted) f.choice("fundingAccount", localized("Origen previsto del pago (opcional)"), listOf("" to localized("Sin origen confirmado")) + cash.filter { it.currency == current?.currency }.map { it.id to "${it.name} · ${it.currency}" }, operation?.fundingAccountId.orEmpty()) else ""
    val fundingPurpose = if (type == "CREDIT_PURCHASE" && funding.isNotBlank()) f.choice("fundingPurpose", localized("Propósito previsto (no se consume al comprar)"), listOf("" to localized("Sin reserva prevista")) + cash.find { it.id == funding }?.reserves.orEmpty().map { it.purposeId to it.name }, operation?.fundingPurposeId.orEmpty()) else ""
    Text(localized("Moneda: {0}", current?.currency ?: localized("Selecciona una cuenta")) + if (type == "CREDIT_PURCHASE" && !alreadyDeducted) localized(" · La compra aumenta la deuda. El pago se registra por separado.") else "")
-   f.text("amount", localized("Importe"), operation?.let { decimal(it.amountMinor) }.orEmpty(), true)
+   f.text("amount", localized("Monto/Importe"), operation?.let { decimal(it.amountMinor) }.orEmpty(), true)
    f.calendar("date", localized("Fecha"), operation?.date ?: today())
-   f.calendar("bookedDate", localized("Fecha contabilizada (si difiere)"), operation?.bookedDate?.takeIf { it != operation.date }.orEmpty(), optional = true)
    f.text("merchant", if (type == "INCOME") localized("Origen del ingreso") else localized("Comercio"), operation?.merchant.orEmpty())
    f.category("category", localized("Categoría"), snapshot.categories, operation?.category.orEmpty())
    f.text("notes", localized("Notas (opcional)"), operation?.notes.orEmpty(), lines = 2)
    val count = f.value("splitCount", operation?.splits?.size?.toString() ?: "0").toIntOrNull() ?: 0
-   Text(localized("Desglose por categoría · suma exacta al importe"), style = MaterialTheme.typography.titleMedium)
+   Text(localized("Desglose por categoría · suma exacta al Monto/Importe"), style = MaterialTheme.typography.titleMedium)
    val splitPurposes = mutableListOf<String?>()
    repeat(count) { index ->
     val initial = operation?.splits?.getOrNull(index)
     f.category("splitCategory$index", localized("Categoría del desglose {0}", index + 1), snapshot.categories, initial?.category.orEmpty())
-    f.text("splitAmount$index", localized("Importe del desglose {0}", index + 1), initial?.let { decimal(it.minor) }.orEmpty(), true)
+    f.text("splitAmount$index", localized("Monto/Importe del desglose {0}", index + 1), initial?.let { decimal(it.minor) }.orEmpty(), true)
     val purpose = if (!alreadyDeducted) f.choice("splitPurpose$index", localized("Propósito del desglose {0}", index + 1), listOf("" to localized("Sin reserva")) + (current?.reserves.orEmpty().map { it.purposeId to it.name }), initial?.purposeId.orEmpty()).ifBlank { null } else null
     splitPurposes.add(purpose)
     Action(localized("Quitar desglose {0}", index + 1), !busy) {
@@ -204,17 +212,17 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
     require(account.isNotBlank()) { localized("Selecciona una cuenta elegible.") }
     val amount = f.amount(default = operation?.let { decimal(it.amountMinor) }.orEmpty(), allowZero = alreadyDeducted)
     val splits = (0 until count).map { i -> val initial = operation?.splits?.getOrNull(i); ExpenseSplit(f.required("splitCategory$i", localized("categoría del desglose"), initial?.category.orEmpty()), f.amount("splitAmount$i", localized("desglose"), initial?.let { decimal(it.minor) }.orEmpty()), splitPurposes[i]) }
-    if (splits.isNotEmpty()) require(splits.fold(0L) { sum, split -> Math.addExact(sum, split.minor) } == amount) { localized("La suma del desglose debe coincidir exactamente con el importe.") }
-    val request = F05Command.Record(if (action == "correct") draft.request() + ":replacement" else draft.request(), account, type, amount, f.date(default = operation?.date ?: today()), f.required("merchant", localized("comercio u origen"), operation?.merchant.orEmpty()), f.required("category", localized("categoría"), operation?.category.orEmpty()), f.value("notes", operation?.notes.orEmpty()), splits, f.optionalDate("bookedDate", operation?.bookedDate?.takeIf { it != operation.date }.orEmpty()), funding.ifBlank { null }, fundingPurpose.ifBlank { null }, previouslyDeducted = alreadyDeducted)
+    if (splits.isNotEmpty()) require(splits.fold(0L) { sum, split -> Math.addExact(sum, split.minor) } == amount) { localized("La suma del desglose debe coincidir exactamente con el Monto/Importe.") }
+    val request = F05Command.Record(if (action == "correct") draft.request() + ":replacement" else draft.request(), account, type, amount, f.date(default = operation?.date ?: today()), f.required("merchant", localized("comercio u origen"), operation?.merchant.orEmpty()), f.required("category", localized("categoría"), operation?.category.orEmpty()), f.value("notes", operation?.notes.orEmpty()), splits, operation?.bookedDate?.takeIf { it != operation.date }, funding.ifBlank { null }, fundingPurpose.ifBlank { null }, previouslyDeducted = alreadyDeducted)
     if (action == "correct") F05Command.Correct(draft.request(), subject, request, f.required("reason", localized("motivo"))) else request
    }
   }
   "void", "refund" -> {
-   InfoCard(localized("Movimiento original"), localized("{0} · {1}\nImporte {2}\nReembolsado {3}\nEl original y su auditoría se conservan.", operation?.date, operation?.merchant, operation?.let { decimal(it.amountMinor) }, operation?.let { decimal(it.refundedMinor) }), 3)
-   if (action == "refund") { f.text("amount", localized("Importe del reembolso parcial"), numeric = true); f.calendar("date", localized("Fecha"), today()); f.calendar("bookedDate", localized("Fecha contabilizada (si difiere)"), optional = true) }
+   InfoCard(localized("Movimiento original"), localized("{0} · {1}\nMonto/Importe {2}\nReembolsado {3}\nEl original y su auditoría se conservan.", operation?.date, operation?.merchant, operation?.let { decimal(it.amountMinor) }, operation?.let { decimal(it.refundedMinor) }), 3)
+   if (action == "refund") { f.text("amount", localized("Monto/Importe del reembolso parcial"), numeric = true); f.calendar("date", localized("Fecha"), today()) }
    f.text("reason", localized("Motivo obligatorio"), lines = 2)
    val confirmed = f.check("confirmed", if (action == "void") localized("Confirmo la anulación y revisión de conciliaciones afectadas") else localized("Confirmo el reembolso y su restitución de reserva"))
-   command = { require(confirmed) { localized("Revisa la vista previa y confirma.") }; if (action == "void") F05Command.Void(draft.request(), subject, f.required("reason", localized("motivo"))) else F05Command.Refund(draft.request(), subject, f.amount(), f.date(), f.required("reason", localized("motivo")), f.optionalDate("bookedDate")) }
+   command = { require(confirmed) { localized("Revisa la vista previa y confirma.") }; if (action == "void") F05Command.Void(draft.request(), subject, f.required("reason", localized("motivo"))) else F05Command.Refund(draft.request(), subject, f.amount(), f.date(), f.required("reason", localized("motivo")), null) }
   }
   "transfer", "withdraw", "fx", "payment", "moveReserve" -> {
    val source = f.account("source", localized("Cuenta de origen"), cash, selectedAccount?.id.orEmpty())
@@ -225,11 +233,10 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
    if (destinations.isEmpty()) Text(if (action == "withdraw") localized("Primero crea una cuenta de tipo Efectivo físico en Cuentas, con la moneda de origen.") else localized("No hay destino elegible. Crea o restaura una cuenta de la moneda y tipo necesarios."), color = MaterialTheme.colorScheme.error)
    Text(localized("Salida {0} → Entrada {1}", origin?.currency, target?.currency))
    if (action == "payment") Text(localized("Confirma un pago real. Reduce dinero propio y deuda; no registra un segundo gasto."))
-   f.text("amount", localized("Importe real de salida"), numeric = true)
-   if (action == "fx") { f.text("received", localized("Importe real recibido"), numeric = true); f.text("rate", localized("Tasa registrada (obligatoria)"), numeric = true); f.text("rateSource", localized("Fuente de tasa (obligatoria)")); Text(localized("La fecha de la operación también fecha el registro de conversión. No se calcula ningún importe ni tasa por ti.")) }
+   f.text("amount", localized("Monto/Importe real de salida"), numeric = true)
+   if (action == "fx") { f.text("received", localized("Monto/Importe real recibido"), numeric = true); f.text("rate", localized("Tasa registrada (obligatoria)"), numeric = true); f.text("rateSource", localized("Fuente de tasa (obligatoria)")); Text(localized("La fecha de la operación también fecha el registro de conversión. No se calcula ningún importe ni tasa por ti.")) }
    f.text("fee", localized("Comisión en moneda de origen"), "0.00", true)
    f.calendar("date", localized("Fecha"), today())
-   f.calendar("bookedDate", localized("Fecha contabilizada (si difiere)"), optional = true)
    if (action == "fx") f.calendar("rateDate", localized("Fecha de tasa (si difiere)"), optional = true)
    f.text("notes", localized("Notas (opcional)"), lines = 2)
    val purpose = if (action == "moveReserve") f.choice("purpose", localized("Reserva que viaja con el dinero"), origin?.reserves.orEmpty().filter { it.minor > 0 }.map { it.purposeId to "${it.name} · ${decimal(it.minor)}" }) else ""
@@ -245,8 +252,8 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
     if (purchaseOptions.isEmpty()) Text(localized("Esta moneda de tarjeta no tiene compras ni principal inicial pendientes para enlazar. Registra primero la compra real."), color = MaterialTheme.colorScheme.error)
     repeat(count) { index ->
      val purchaseId = f.choice("allocationPurchase$index", localized("Compra a liquidar {0}", index + 1), purchaseOptions)
-     val total = if (count == 1) f.check("allocationUseTotal$index", localized("Aplicar todo el importe principal a esta compra"), true) else false
-     if (!total) f.text("allocationAmount$index", localized("Importe aplicado a compra {0}", index + 1), numeric = true)
+     val total = if (count == 1) f.check("allocationUseTotal$index", localized("Aplicar todo el Monto/Importe principal a esta compra"), true) else false
+     if (!total) f.text("allocationAmount$index", localized("Monto/Importe aplicado a compra {0}", index + 1), numeric = true)
      val paymentPurpose = f.choice("allocationPurpose$index", localized("Financiación real de compra {0}", index + 1), listOf("" to localized("Dinero sin asignar")) + origin?.reserves.orEmpty().map { it.purposeId to "${it.name} · ${decimal(it.minor)}" })
      allocations.add { require(purchaseId.isNotBlank()) { localized("Selecciona una compra pendiente para este pago.") }; CreditPaymentAllocation(purchaseId, if (total) f.amount() else f.amount("allocationAmount$index", localized("aplicación a compra {0}", index + 1)), paymentPurpose.ifBlank { null }) }
     }
@@ -256,7 +263,7 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
    }
    if (action == "moveReserve") Text(localized("La reserva y el dinero se transfieren juntos; el destino conserva el mismo propósito. La comisión consume dinero sin asignar."))
    val confirmed = f.check("confirmed", localized("Confirmo que la transferencia o pago ocurrió"))
-   command = { require(confirmed) { localized("Confirma que esta operación ocurrió.") }; require(source.isNotBlank() && destination.isNotBlank()) { localized("Selecciona origen y destino elegibles de la moneda correcta.") }; if (action == "moveReserve") require(purpose.isNotBlank()) { localized("Selecciona una reserva financiada.") }; val amount = f.amount(); if (action == "fx") { f.required("rate", localized("tasa registrada")); f.required("rateSource", localized("fuente de tasa")) }; val paymentAllocations = allocations.map { it() }; if (action == "payment") require(paymentAllocations.fold(0L) { total, entry -> Math.addExact(total, entry.minor) } == amount) { localized("Las aplicaciones a compras deben sumar exactamente el principal del pago.") }; F05Command.Transfer(draft.request(), source, destination, amount, if (action == "fx") f.amount("received", localized("importe recibido")) else amount, f.date(), f.amount("fee", localized("comisión"), "0.00", true), purpose.ifBlank { null }, f.value("rate").ifBlank { null }, f.value("rateSource").ifBlank { null }, f.value("notes"), f.optionalDate("bookedDate"), f.optionalDate("rateDate"), paymentAllocations) }
+   command = { require(confirmed) { localized("Confirma que esta operación ocurrió.") }; require(source.isNotBlank() && destination.isNotBlank()) { localized("Selecciona origen y destino elegibles de la moneda correcta.") }; if (action == "moveReserve") require(purpose.isNotBlank()) { localized("Selecciona una reserva financiada.") }; val amount = f.amount(); if (action == "fx") { f.required("rate", localized("tasa registrada")); f.required("rateSource", localized("fuente de tasa")) }; val paymentAllocations = allocations.map { it() }; if (action == "payment") require(paymentAllocations.fold(0L) { total, entry -> Math.addExact(total, entry.minor) } == amount) { localized("Las aplicaciones a compras deben sumar exactamente el principal del pago.") }; F05Command.Transfer(draft.request(), source, destination, amount, if (action == "fx") f.amount("received", localized("importe recibido")) else amount, f.date(), f.amount("fee", localized("comisión"), "0.00", true), purpose.ifBlank { null }, f.value("rate").ifBlank { null }, f.value("rateSource").ifBlank { null }, f.value("notes"), null, f.optionalDate("rateDate"), paymentAllocations) }
   }
   "reserve", "release", "redistribute" -> {
    val account = f.account("account", localized("Cuenta con dinero existente"), cash, selectedAccount?.id.orEmpty())
@@ -267,7 +274,7 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
    val selected = if (action != "release") f.choice("purpose", localized("Propósito de destino"), listOf("new" to localized("Crear propósito")) + snapshot.accounts.flatMap { it.reserves }.distinctBy { it.purposeId }.filter { it.purposeId != from }.map { it.purposeId to it.name }) else from
    val target = snapshot.accounts.flatMap { it.reserves }.find { it.purposeId == selected }
    if (selected == "new") f.text("name", localized("Nombre del propósito"))
-   f.text("amount", if (action == "release") localized("Importe a liberar") else localized("Importe a reservar"), numeric = true)
+   f.text("amount", if (action == "release") localized("Monto/Importe a liberar") else localized("Monto/Importe a reservar"), numeric = true)
    Text(localized("Asignar y liberar no son ingresos ni gastos. Solo se reserva dinero disponible real."))
    command = { require(account.isNotBlank()) { localized("Selecciona una cuenta.") }; val amount = f.amount(); val id = if (selected == "new") "purpose-${draft.request()}" else selected; val name = if (selected == "new") f.required("name", localized("nombre del propósito")) else target?.name ?: existing.find { it.purposeId == from }?.name.orEmpty(); require(id.isNotBlank()) { localized("Selecciona un propósito.") }; if (action == "redistribute") F05Command.Redistribute(draft.request(), account, from, id, name, amount) else F05Command.FundReserve(draft.request(), account, id, name, if (action == "release") -amount else amount) }
   }
@@ -298,7 +305,7 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
   "hold" -> {
    val account = f.account("account", localized("Cuenta o tarjeta"), active)
    f.text("merchant", localized("Comercio"))
-   f.text("amount", localized("Importe retenido"), numeric = true)
+   f.text("amount", localized("Monto/Importe retenido"), numeric = true)
    f.calendar("date", localized("Fecha de autorización"), today())
    Text(localized("Una autorización queda pendiente y separada del saldo contabilizado. Confirma el cargo únicamente cuando esté contabilizado."))
    command = { require(account.isNotBlank()) { localized("Selecciona una cuenta.") }; F05Command.CreateHold(draft.request(), account, f.amount(), f.required("merchant", localized("comercio")), f.date()) }
@@ -311,9 +318,9 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
     else -> hold?.status.orEmpty()
    }
    Text(localized("{0} · {1}\nEstado: {2}", hold?.merchant, hold?.let { decimal(it.minor) }, holdStatus))
-   if (action == "confirmHold") { f.category("category", localized("Categoría del cargo"), snapshot.categories); f.calendar("date", localized("Fecha del cargo"), today()); f.calendar("bookedDate", localized("Fecha contabilizada (si difiere)"), optional = true); f.text("notes", localized("Notas (opcional)"), lines = 2) }
+   if (action == "confirmHold") { f.category("category", localized("Categoría del cargo"), snapshot.categories); f.calendar("date", localized("Fecha del cargo"), today()); f.text("notes", localized("Notas (opcional)"), lines = 2) }
    val confirmed = f.check("confirmed", if (action == "confirmHold") localized("Verifiqué que el cargo está contabilizado; sustituye la retención") else localized("Verifiqué que la autorización fue liberada sin cargo"))
-   command = { require(confirmed) { localized("Confirma el estado real de la retención.") }; if (action == "confirmHold") F05Command.ConfirmHold(draft.request(), subject, f.required("category", localized("categoría")), f.date(), f.value("notes"), f.optionalDate("bookedDate")) else F05Command.ReleaseHold(draft.request(), subject) }
+   command = { require(confirmed) { localized("Confirma el estado real de la retención.") }; if (action == "confirmHold") F05Command.ConfirmHold(draft.request(), subject, f.required("category", localized("categoría")), f.date(), f.value("notes"), null) else F05Command.ReleaseHold(draft.request(), subject) }
   }
   "import" -> ImportForm(snapshot, draft, busy, onError, onSubmit, preview)
  }

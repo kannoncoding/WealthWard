@@ -60,6 +60,7 @@ internal fun CalendarDateField(
         onClick = { open = true },
         enabled = enabled,
         shape = MaterialTheme.shapes.extraSmall,
+        colors = outlineActionColors(),
         modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
             .semantics { contentDescription = label },
     ) {

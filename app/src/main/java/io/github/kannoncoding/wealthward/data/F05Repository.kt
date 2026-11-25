@@ -183,7 +183,12 @@ class F05Repository(private val db: WealthDatabase) {
     if(c.id.isBlank() || c.productId.isBlank() || c.name.isBlank() || c.kind !in setOf("CASH","LIABILITY") || c.creditLimitMinor < 0) invalid("Account name, product, currency and valid type are required")
     val customTypeName = c.customTypeName?.trim()
     if (!validCashSubtype(c.kind, c.productId.startsWith("cash"), c.cashSubtype, customTypeName)) invalid("Completa un tipo válido para la cuenta.")
-    if(dao.accounts().any { it.id == c.id }) invalid("Account already exists")
+    val accounts = dao.accounts()
+    if (accounts.any { it.id == c.id }) invalid("Account already exists")
+    val productAccounts = accounts.filter { meta(state, it).getString("productId") == c.productId }
+    if (productAccounts.any { c.productId.startsWith("cash") || it.kind != c.kind || it.currency == c.currency.name }) {
+     invalid("El producto requiere cuentas del mismo tipo y una sola cuenta por moneda.")
+    }
     dao.insertAccount(AccountEntity(c.id,c.name,c.currency.name,c.kind,c.openingMinor,c.creditLimitMinor))
     val metadata = obj("id" to c.id,"productId" to c.productId,"openingDate" to c.openingDate,"archived" to false)
     metadata.put("cashSubtype", c.cashSubtype?.name).put("customTypeName", customTypeName)

@@ -60,6 +60,17 @@ internal fun validateCommitmentRestore(
     val debtAccounts = debts.map { debtAccount(it.id) }.toSet()
     if (accounts.filter { it.kind == "TERM_DEBT" }.map { it.id }.toSet() != debtAccounts) invalid()
     val debtIds = debts.map { it.id }.toSet()
+    val debtsById = debts.associateBy { it.id }
+    val maturityEdits = data.debtMaturityEdits()
+    val maturityAuditIds = state.f07Rows("audit")
+        .filter { it.getString("action") == F07Command.UpdateDebtMaturity::class.java.simpleName }
+        .map { it.getString("requestId") }
+    if (maturityEdits.map { it.getString("requestId") } != maturityAuditIds) invalid()
+    maturityEdits.forEach { row ->
+        val command = F07Command.UpdateDebtMaturity(row.getString("requestId"), row.getString("debtId"), row.getString("maturityDate"))
+        checkRequest(command)
+        validateDebt((debtsById[command.debtId] ?: invalid()).withMaturity(command.maturityDate), accounts)
+    }
     if ((data.f07Rows("checks") + data.f07Rows("payments")).any { it.getString("debtId") !in debtIds }) invalid()
     debts.forEach { debt ->
         validateDebt(debt, accounts)
