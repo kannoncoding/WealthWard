@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import io.github.kannoncoding.wealthward.domain.*
 import io.github.kannoncoding.wealthward.notifications.*
+import java.time.LocalDate
 import java.time.YearMonth
 import java.math.BigDecimal
 
@@ -100,7 +101,21 @@ private fun IncomeFrequency.incomeLabel() = when (this) {
  IncomeFrequency.MONTHLY -> localized("Mensual")
  IncomeFrequency.WEEKLY -> localized("Semanal")
  IncomeFrequency.EVERY_14_DAYS -> localized("Quincenal (cada 14 días)")
+ IncomeFrequency.DAYS_15_30 -> localized("Quincenal (15 y 30)")
+ IncomeFrequency.DAYS_10_25 -> localized("Quincenal (10 y 25)")
 }
+
+@Composable private fun Fields.payWeekday(anchor: String): java.time.DayOfWeek {
+ val days = java.time.DayOfWeek.entries
+ val options = days.map { day ->
+  day.name to day.getDisplayName(java.time.format.TextStyle.FULL, AppLanguage.current.locale)
+   .replaceFirstChar { it.titlecase(AppLanguage.current.locale) }
+ }
+ return java.time.DayOfWeek.valueOf(choice("payWeekday", localized("Día de pago"), options, LocalDate.parse(anchor).dayOfWeek.name))
+}
+
+private fun LocalDate.onWeekday(day: java.time.DayOfWeek?): LocalDate =
+ if (day == null) this else with(java.time.temporal.TemporalAdjusters.nextOrSame(day))
 
 @Composable internal fun ConfigurationMenu(open: (String,String) -> Unit) {
  configSections.forEach { (id,label) -> Action(label, menu = true) { open(id, "") } }
@@ -126,7 +141,12 @@ private fun IncomeFrequency.incomeLabel() = when (this) {
   "sectionBills" -> {
    Action(localized("Crear un nuevo gasto")) { open("f06template", "FIXED") }
    Action(localized("Crear una suscripción")) { open("f06template", "SUBSCRIPTION") }
- plan.templates.groupBy { it.id }.values.forEach { versions -> val item=versions.maxBy { it.version }
+   GoldClasp()
+   Text(localized("Lista de gastos fijos y suscripciones"), style = MaterialTheme.typography.titleLarge)
+   val bills = plan.occurrences.filter { it.nature in setOf(PlanNature.FIXED, PlanNature.SUBSCRIPTION) }.groupBy { it.templateId }
+ plan.templates.groupBy { it.id }.values.forEachIndexed { index, versions ->
+  if (index > 0) GoldClasp()
+  val item=versions.maxBy { it.version }
   InfoCard(item.name, localized("{0} · {1}\nDesde {2} · versión {3} · {4}", natureName(item.nature), money(item.minor,item.currency), item.effectiveMonth, item.version, if(item.cancelled) localized("Cancelada") else if(item.paused) localized("Pausada") else localized("Activa")) + if(item.frequency==Recurrence.ANNUAL) localized("\nAporte mensual previsto {0} {1}; financiar requiere dinero existente.", decimal(item.monthlyContributionMinor), item.currency) else "", 0)
   Action(localized("Revisar / pausar · {0}", item.name)) { open("f06template",item.id) }
   if(item.frequency==Recurrence.ANNUAL && item.purposeId!=null) Action(localized("Aportar a reserva anual · {0}", item.name)) { open("f06purpose",item.id) }
@@ -135,15 +155,18 @@ private fun IncomeFrequency.incomeLabel() = when (this) {
   if(showHistory) versions.sortedBy { it.version }.forEach { revision ->
    InfoCard(localized("Versión {0} · desde {1}", revision.version, revision.effectiveMonth), localized("{0} · {1}\nGrupo {2} · {3}\nDías nominales {4}{5}\n{6} · {7}\nMotivo: {8}", revision.name, money(revision.minor,revision.currency), revision.group, natureName(revision.nature), revision.day, if(revision.frequency==Recurrence.TWO_SLOTS) localized(" y {0}", revision.secondDay) else "", revision.frequency, if(revision.cancelled) localized("Cancelada") else if(revision.paused) localized("Pausada") else localized("Activa"), revision.reason) + if(revision.householdTotalMinor!=null) localized("\nTotal hogar {0} · mi porcentaje {1}", money(revision.householdTotalMinor,revision.currency), revision.ownPercent ?: localized("Monto/Importe fijo")) else "",4)
   }
+  PendingPayments(bills[item.id].orEmpty(), open)
  }
-   PendingPayments(plan.occurrences.filter { it.nature in setOf(PlanNature.FIXED,PlanNature.SUBSCRIPTION) }, open)
+   GoldClasp(double = true)
+   Text(localized("Más opciones"), style = MaterialTheme.typography.titleLarge)
    Action(localized("Editar presupuesto por categoría")) { open("f06budget", "") }
    Action(localized("Preparar otro mes")) { open("f06copy", "") }
    Action(localized("Ajustar pronóstico")) { open("f08", "") }
   }
   "sectionDebt" -> {
-   TermDebtCards(commitments, ledger, open)
-   PendingPayments(commitments.installments, open)
+   TermDebtCards(commitments, ledger, open) { debtId ->
+    PendingPayments(commitments.installments.filter { it.templateId == "term-debt:$debtId" }, open)
+   }
   }
   "sectionAccounts" -> Action(localized("Importar cuentas")) { open("import", "") }
   "sectionBackup" -> F10Configuration { open(it, "") }
@@ -187,7 +210,8 @@ private fun IncomeFrequency.incomeLabel() = when (this) {
      "DAY" to localized("Día fijo del mes")),if(latest?.scheduleDay==null) "LAST" else "DAY")
    } else ""
    val anchor = latest?.anchorDate ?: today()
-   if (frequency != IncomeFrequency.MONTHLY) f.calendar("anchor",localized("Fecha de referencia"),anchor)
+   if (frequency.intervalDays != null) f.calendar("anchor",localized("Fecha de referencia"),anchor)
+   val weekday = if (frequency == IncomeFrequency.WEEKLY) f.payWeekday(anchor) else null
    if (schedule=="DAY") f.text("day",localized("Día nominal de recepción (1–31)"),(latest?.scheduleDay ?: 1).toString(),true)
    f.text("reason",localized("Motivo de la versión"))
    command = {
@@ -196,7 +220,7 @@ private fun IncomeFrequency.incomeLabel() = when (this) {
      YearMonth.parse(f.required("effective",localized("mes"),month)).toString(),
      f.amount(label=localized("salario neto")),Currency.valueOf(currency),account.ifBlank { null },
      f.required("reason",localized("motivo")),if(schedule=="DAY") f.required("day",localized("día"),"1").toInt() else null,
-     frequency,if (frequency != IncomeFrequency.MONTHLY) f.date("anchor",anchor) else null,
+     frequency,if (frequency.intervalDays != null) LocalDate.parse(f.date("anchor",anchor)).onWeekday(weekday).toString() else null,
     ))
    }
   }
@@ -210,6 +234,7 @@ private fun IncomeFrequency.incomeLabel() = when (this) {
     IncomeFrequency.entries.map { it.name to it.incomeLabel() },
     previous?.frequency?.name ?: IncomeFrequency.MONTHLY.name) else "ONCE"
    f.calendar("date",if (recurring) localized("Fecha de referencia") else localized("Fecha esperada"),anchor)
+   val weekday = if (frequency == IncomeFrequency.WEEKLY.name) f.payWeekday(anchor) else null
    f.text("amount",localized("Importe esperado"),previous?.expectedMinor?.let(::decimal).orEmpty(),numeric=true)
    val currency=f.choice("currency",localized("Moneda"),Currency.entries.map { it.name to it.name },previous?.currency?.name ?: "CRC")
    val account=f.account("account",localized("Cuenta de recepción sugerida"),cash.filter { it.currency.name==currency },previous?.accountId.orEmpty())
@@ -227,7 +252,7 @@ private fun IncomeFrequency.incomeLabel() = when (this) {
     else F06Command.SaveExtraIncome(draft.request(),ExtraIncomeVersion(
      id,(previous?.version ?: 0) + 1,name,
      if (previous == null) date else maxOf(today(),previous.effectiveDate),
-     date,IncomeFrequency.valueOf(frequency),amount,native,accountId,paused,
+     LocalDate.parse(date).onWeekday(weekday).toString(),IncomeFrequency.valueOf(frequency),amount,native,accountId,paused,
     ))
    }
   }

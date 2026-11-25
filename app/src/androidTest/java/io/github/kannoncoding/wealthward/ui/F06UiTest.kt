@@ -97,6 +97,20 @@ class F06UiTest {
   repo.execute(F06Command.SaveTemplate("template",RecurringTemplate("bill",1,"Servicio de prueba","Hogar",PlanNature.FIXED,100000,Currency.CRC,"2027-02",day=day,suggestedAccountId="a",purposeId=purpose,reason="Alta")))
   repo.execute(F06Command.OpenPeriod("open","2027-02"))
  }
+ @Test fun weeklySalarySavesTheSelectedWeekday() {
+  ui.onNodeWithContentDescription("Frecuencia").performScrollTo().performClick()
+  ui.onNodeWithText("Semanal").performClick()
+  ui.selectCalendarDate("Fecha de referencia", "2027-02-01")
+  ui.onNodeWithContentDescription("Día de pago").performScrollTo().performClick()
+  ui.onNodeWithText("Viernes").performClick()
+  text("Salario neto","2000")
+  text("Motivo de la versión","Alta de prueba")
+  click("Guardar"); saved()
+  runBlocking { repo.execute(F06Command.OpenPeriod("open-weekly","2027-02")) }
+  assertEquals("2027-02-05", snapshot().salaries.single().anchorDate)
+  assertEquals(listOf("2027-02-05","2027-02-12","2027-02-19","2027-02-26"), snapshot().occurrences.map { it.dueDate }.sorted())
+  assertTrue(runBlocking { ledger.snapshot() }.operations.isEmpty())
+ }
  @Test fun t05SalaryExpectationRequiresRealReceiptAndPartialPayment() {
   text("Salario neto","2000"); text("Motivo de la versión","Alta de prueba"); click("Guardar"); saved()
   assertTrue(runBlocking { ledger.snapshot() }.operations.isEmpty())

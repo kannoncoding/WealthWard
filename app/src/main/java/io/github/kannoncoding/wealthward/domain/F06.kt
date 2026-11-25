@@ -9,7 +9,13 @@ enum class Recurrence { MONTHLY, ANNUAL, EVERY_N_MONTHS, TWO_SLOTS }
 data class PlanRow(val id:String, val name:String, val group:String, val nature:PlanNature, val minor:Long, val currency:Currency, val suggestedAccountId:String?=null, val accumulate:Boolean=false)
 data class PeriodPlan(val month:String, val version:Int, val rows:List<PlanRow>, val targetMinor:Long=0, val targetCurrency:Currency=Currency.CRC, val reason:String="", val effectiveDate:String=month+"-01")
 data class RecurringTemplate(val id:String, val version:Int, val name:String, val group:String, val nature:PlanNature, val minor:Long, val currency:Currency, val effectiveMonth:String, val frequency:Recurrence=Recurrence.MONTHLY, val day:Int=1, val secondDay:Int=15, val intervalMonths:Int=1, val suggestedAccountId:String?=null, val purposeId:String?=null, val paused:Boolean=false, val cancelled:Boolean=false, val householdTotalMinor:Long?=null, val ownPercent:String?=null, val ownFixedMinor:Long?=null, val monthlyContributionMinor:Long=0, val reason:String="", val anchorMonth:String=effectiveMonth, val category:String?=null)
-enum class IncomeFrequency(val intervalDays: Long?) { MONTHLY(null), WEEKLY(7), EVERY_14_DAYS(14) }
+enum class IncomeFrequency(val intervalDays: Long?) { MONTHLY(null), WEEKLY(7), EVERY_14_DAYS(14), DAYS_15_30(null), DAYS_10_25(null);
+ val fixedDays: List<Int> get() = when (this) {
+  DAYS_15_30 -> listOf(15, 30)
+  DAYS_10_25 -> listOf(10, 25)
+  else -> emptyList()
+ }
+}
 data class SalaryVersion(val id:String, val effectiveMonth:String, val netMinor:Long, val currency:Currency, val accountId:String?=null, val reason:String="", val scheduleDay:Int?=null, val frequency:IncomeFrequency=IncomeFrequency.MONTHLY, val anchorDate:String?=null)
 data class ExtraIncomeVersion(
  val id: String,
@@ -59,6 +65,7 @@ object PlanningMath {
  fun salaryDate(month:YearMonth):LocalDate { var day=month.atEndOfMonth(); while(day.dayOfWeek==DayOfWeek.SATURDAY || day.dayOfWeek==DayOfWeek.SUNDAY) day=day.minusDays(1); return day }
  fun incomeDates(month: YearMonth, frequency: IncomeFrequency, anchor: LocalDate): List<LocalDate> {
   if (anchor > month.atEndOfMonth()) return emptyList()
+  if (frequency.fixedDays.isNotEmpty()) return frequency.fixedDays.map { due(month, it) }.filter { it >= anchor }
   val interval = frequency.intervalDays ?: return listOf(due(month, anchor.dayOfMonth))
   val start = maxOf(anchor, month.atDay(1))
   val elapsed = start.toEpochDay() - anchor.toEpochDay()
@@ -69,7 +76,7 @@ object PlanningMath {
   if (salary.frequency == IncomeFrequency.MONTHLY) {
    listOf(salary.scheduleDay?.let { due(month, it) } ?: salaryDate(month))
   } else {
-   incomeDates(month, salary.frequency, LocalDate.parse(salary.anchorDate))
+   incomeDates(month, salary.frequency, salary.anchorDate?.let(LocalDate::parse) ?: YearMonth.parse(salary.effectiveMonth).atDay(1))
   }
  fun slots(template:RecurringTemplate,month:YearMonth):List<LocalDate> {
   val start=YearMonth.parse(template.anchorMonth); val delta=java.time.temporal.ChronoUnit.MONTHS.between(start,month)

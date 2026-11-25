@@ -122,7 +122,7 @@ internal fun MonthlySummary(
         }
     }
     GoldClasp()
-    Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).actionSurface()
+    Column(Modifier.fillMaxWidth().heightIn(min = 48.dp)
         .clickable(role = Role.Button) { open("upcoming", "") }
         .padding(horizontal = 5.dp, vertical = 5.dp)) {
         Text(localized("Próximamente"), style = MaterialTheme.typography.titleLarge, fontSize = 18.sp,
@@ -156,23 +156,24 @@ internal fun MonthlySummary(
 }
 
 @Composable
-internal fun GoldClasp() {
+internal fun GoldClasp(double: Boolean = false) {
     Canvas(Modifier.fillMaxWidth().padding(horizontal = 6.dp).height(16.dp)) {
         val gold = Color(0xFFAF8A49)
         val x = center.x
-        val y = center.y
         val r = 3.dp.toPx()
         val gap = 9.dp.toPx()
         val width = 1.dp.toPx()
-        drawLine(gold.copy(alpha = .65f), Offset(0f, y), Offset(x - gap, y), width, StrokeCap.Round)
-        drawLine(gold.copy(alpha = .65f), Offset(x + gap, y), Offset(size.width, y), width, StrokeCap.Round)
-        drawPath(Path().apply {
-            moveTo(x, y - r)
-            lineTo(x + r, y)
-            lineTo(x, y + r)
-            lineTo(x - r, y)
-            close()
-        }, gold)
+        for (y in if (double) listOf(center.y - 4.dp.toPx(), center.y + 4.dp.toPx()) else listOf(center.y)) {
+            drawLine(gold.copy(alpha = .65f), Offset(0f, y), Offset(x - gap, y), width, StrokeCap.Round)
+            drawLine(gold.copy(alpha = .65f), Offset(x + gap, y), Offset(size.width, y), width, StrokeCap.Round)
+            drawPath(Path().apply {
+                moveTo(x, y - r)
+                lineTo(x + r, y)
+                lineTo(x, y + r)
+                lineTo(x - r, y)
+                close()
+            }, gold)
+        }
     }
 }
 

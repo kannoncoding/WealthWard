@@ -230,8 +230,7 @@ internal fun TabIcon(index: Int, color: Color) {
 internal fun WealthNavigationBar(tabs: List<String>, selected: Int, onSelect: (Int) -> Unit) {
     if (tabs.isEmpty()) return
     val palette = LocalPalette.current
-    val spacing = LocalUiSize.current.spacingScale
-    val gap = 3.dp * spacing
+    val gap = 2.dp
     val labelStyle = MaterialTheme.typography.labelSmall
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer()
@@ -243,7 +242,7 @@ internal fun WealthNavigationBar(tabs: List<String>, selected: Int, onSelect: (I
 
     BoxWithConstraints(
         Modifier.fillMaxWidth().background(palette.gradientEnd).navigationBarsPadding()
-            .padding(horizontal = 8.dp * spacing, vertical = 8.dp * spacing),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
         val available = maxWidth - gap * (tabs.size - 1)
         val minimum = minWidths.fold(0.dp) { total, width -> total + width }
@@ -251,19 +250,19 @@ internal fun WealthNavigationBar(tabs: List<String>, selected: Int, onSelect: (I
         val fits = minimum <= available
         val extra = (available - minimum).coerceAtLeast(0.dp) / tabs.size
         val scrollable = if (fits) Modifier else Modifier.horizontalScroll(scroll)
-        Row(Modifier.fillMaxWidth().then(scrollable).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+        Row(Modifier.fillMaxWidth().then(scrollable).selectableGroup().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(gap)) {
             tabs.forEachIndexed { index, title ->
                 val active = selected == index
                 val width = if (equalWidthsFit) Modifier.weight(1f) else Modifier.width(minWidths[index] + extra)
                 Column(
-                    width.heightIn(min = 52.dp).actionSurface(selected = active)
+                    width.heightIn(min = 52.dp)
                         .selectable(active, role = Role.Tab, onClick = { onSelect(index) })
-                        .padding(horizontal = 3.dp, vertical = 5.dp * spacing),
+                        .padding(horizontal = 3.dp, vertical = 5.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp * spacing, Alignment.CenterVertically),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    TabIcon(index, if (active) palette.accent else palette.ink)
-                    Text(title, color = palette.ink, style = labelStyle, softWrap = false, maxLines = 1, textAlign = TextAlign.Center)
+                    TabIcon(index, if (active) Turquoise else palette.ink)
+                    Text(title, color = if (active) Turquoise else palette.ink, style = labelStyle, softWrap = false, maxLines = 1, textAlign = TextAlign.Center)
                 }
             }
         }

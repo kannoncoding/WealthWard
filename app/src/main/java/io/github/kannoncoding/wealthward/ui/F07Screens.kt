@@ -44,11 +44,13 @@ internal fun debtEstimateExplanation(mode: String, amortization: DebtAmortizatio
  else -> null
 }
 
-@Composable internal fun TermDebtCards(plan: F07Snapshot, ledger: F05Snapshot, open: (String, String) -> Unit) {
- Text(localized("Deudas a plazo"), style = MaterialTheme.typography.titleLarge)
- Action(localized("Crear deuda a plazo")) { open("f07debt", "") }
+@Composable internal fun TermDebtCards(plan: F07Snapshot, ledger: F05Snapshot, open: (String, String) -> Unit, installments: @Composable (String) -> Unit) {
+ Action(localized("Crear deuda")) { open("f07debt", "") }
+ GoldClasp()
+ Text(localized("Lista de deudas actuales"), style = MaterialTheme.typography.titleLarge)
  if (plan.debts.isEmpty()) Text(localized("Aún no hay deudas a plazo."))
- plan.debts.forEach { status ->
+ plan.debts.forEachIndexed { index, status ->
+  if (index > 0) GoldClasp()
   val debt = status.debt
   InfoCard(debt.name, buildString {
    appendLine("${debt.group} · ${debtKindName(debt.kind)}")
@@ -92,6 +94,7 @@ internal fun debtEstimateExplanation(mode: String, amortization: DebtAmortizatio
    InfoCard("${payment.date} · ${if (payment.extra) localized("Abono extraordinario") else localized("Cuota {0}", payment.installmentMonth)}",
     localized("{0}\nPrincipal {1}\nIntereses {2}\nCargos {3}\nTotal pagado {4}", account?.name.orEmpty(), money(payment.principalMinor, debt.currency), money(payment.interestMinor, debt.currency), money(payment.chargesMinor, debt.currency), money(payment.totalMinor, debt.currency)), 2)
   }
+  installments(debt.id)
  }
 }
 

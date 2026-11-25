@@ -24,5 +24,18 @@ class F06PlanningTest {
   assertEquals(listOf("2028-03-30"),dates(march,IncomeFrequency.MONTHLY))
   assertTrue(dates(february.minusMonths(2),IncomeFrequency.WEEKLY).isEmpty())
  }
+ @Test fun fixedIncomeDatesClampDayThirtyAndRespectTheFirstDate() {
+  val leapFebruary = YearMonth.parse("2028-02")
+  val lateStart = leapFebruary.atDay(17)
+  assertEquals(listOf(leapFebruary.atEndOfMonth()), PlanningMath.incomeDates(leapFebruary, IncomeFrequency.DAYS_15_30, lateStart))
+  assertEquals(listOf(leapFebruary.atDay(25)), PlanningMath.incomeDates(leapFebruary, IncomeFrequency.DAYS_10_25, lateStart))
+  val march = leapFebruary.plusMonths(1)
+  val salary = SalaryVersion("salary", leapFebruary.toString(), 100, Currency.CRC, frequency = IncomeFrequency.DAYS_15_30)
+  assertEquals(listOf(leapFebruary.atDay(15), leapFebruary.atDay(29)), PlanningMath.salaryDates(leapFebruary, salary))
+  assertEquals(listOf(march.atDay(15), march.atDay(30)), PlanningMath.salaryDates(march, salary))
+  val nonLeapFebruary = leapFebruary.minusYears(1)
+  assertEquals(listOf(nonLeapFebruary.atDay(15), nonLeapFebruary.atDay(28)),
+   PlanningMath.incomeDates(nonLeapFebruary, IncomeFrequency.DAYS_15_30, nonLeapFebruary.atDay(1)))
+ }
  @Test fun householdOwnShareRoundsHalfUpAndValidatesBounds() { assertEquals(51,PlanningMath.ownShare(101,"50",null)); assertEquals(17,PlanningMath.ownShare(101,null,17)); try { PlanningMath.ownShare(100,"100.1",null); fail("Out-of-range percentage") } catch (_:IllegalArgumentException) {} }
 }

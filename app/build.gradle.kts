@@ -6,7 +6,7 @@ android {
   applicationId = "io.github.kannoncoding.wealthward"
   minSdk = 26
   targetSdk = 37
-  versionCode = 10
+  versionCode = 11
   versionName = "1.3"
   testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
  }

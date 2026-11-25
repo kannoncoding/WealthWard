@@ -337,8 +337,8 @@ private fun salary(s:JSONObject)=SalaryVersion(s.getString("id"),s.getString("ef
 private fun validateSalary(s: SalaryVersion) {
  YearMonth.parse(s.effectiveMonth)
  if (s.id.isBlank() || s.netMinor <= 0 || (s.scheduleDay != null && s.scheduleDay !in 1..31)) fail("Invalid salary")
- if (s.frequency == IncomeFrequency.MONTHLY) {
-  if (s.anchorDate != null) fail("Invalid salary anchor")
+ if (s.frequency.intervalDays == null) {
+  if (s.anchorDate != null || s.frequency != IncomeFrequency.MONTHLY && s.scheduleDay != null) fail("Invalid salary anchor")
  } else {
   if (s.anchorDate == null || s.scheduleDay != null) fail("A weekly or 14-day salary needs an anchor date")
   LocalDate.parse(s.anchorDate)
