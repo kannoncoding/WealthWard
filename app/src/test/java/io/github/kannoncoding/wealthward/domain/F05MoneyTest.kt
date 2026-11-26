@@ -6,6 +6,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class F05MoneyTest {
+ @Test fun manualCrcPerUsdQuoteRoundsFromEitherCurrencyAndStoresDestinationPerOrigin() {
+  val rate = CrcPerUsdRate(BigDecimal("512.5"))
+  assertEquals(Money(513, Currency.CRC), rate.convert(Money(1, Currency.USD)))
+  assertEquals(Money(1, Currency.USD), rate.convert(Money(257, Currency.CRC)))
+  assertEquals(Money(0, Currency.USD), rate.convert(Money(256, Currency.CRC)))
+  assertEquals("512.5", rate.destinationPerOrigin(Currency.USD))
+  val reciprocal = BigDecimal(rate.destinationPerOrigin(Currency.CRC))
+  assertEquals(Money(200, Currency.USD), Money(102500, Currency.CRC).convert(Currency.USD, reciprocal))
+ }
+ @Test fun fxInputsAcceptSpanishDecimalAndUnambiguousGrouping() {
+  assertEquals(BigDecimal("500.25"), parseFxDecimal("500,25"))
+  assertEquals(BigDecimal("5000.00"), parseFxDecimal("5.000,00"))
+  assertEquals(BigDecimal("5000.00"), parseFxDecimal("5000.00"))
+  assertNull(parseFxDecimal("5.00,00"))
+ }
+
  @Test fun tinyFxRatesRoundToIntegerMinorUnitsWithHalfUpAndRejectOverflow() {
   assertEquals(1L,Money(500,Currency.CRC).convert(Currency.USD,BigDecimal("0.001")).minor)
   assertEquals(0L,Money(499,Currency.CRC).convert(Currency.USD,BigDecimal("0.001")).minor)

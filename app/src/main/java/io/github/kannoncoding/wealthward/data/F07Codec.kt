@@ -68,11 +68,22 @@ internal fun Debt.withMaturity(date: String): Debt {
     return copy(maturityDate = date, remainingMonths = count.toInt(), estimateTermFromBalance = false)
 }
 
-internal fun JSONObject.debtWithMaturity(row: JSONObject): Debt {
-    val original = row.debt()
-    return debtMaturityEdits().lastOrNull { it.getString("debtId") == original.id }
-        ?.let { original.withMaturity(it.getString("maturityDate")) } ?: original
+internal fun JSONObject.loanEdits(): List<JSONObject> =
+    if (has("loanEdits")) f07Rows("loanEdits") else emptyList()
+
+internal fun JSONObject.debtRevisions(id: String): List<JSONObject> {
+    val data = commitments()
+    val revisions = (data.debtMaturityEdits().filter { it.getString("debtId") == id } +
+        data.loanEdits().filter { it.getJSONObject("debt").getString("id") == id })
+        .associateBy { it.getString("requestId") }
+    if (revisions.isEmpty()) return emptyList()
+    return f07Rows("audit").mapNotNull { revisions[it.getString("requestId")] }
 }
+
+internal fun Debt.applyRevision(row: JSONObject): Debt =
+    if (row.has("debt")) row.getJSONObject("debt").debt() else withMaturity(row.getString("maturityDate"))
+
+internal fun JSONObject.revisedDebt(debt: Debt): Debt = debtRevisions(debt.id).fold(debt, Debt::applyRevision)
 
 internal fun JSONObject.debtPayment() = DebtPayment(
     getString("id"), getString("debtId"), getString("accountId"), getString("date"), f07Text("installmentMonth"),

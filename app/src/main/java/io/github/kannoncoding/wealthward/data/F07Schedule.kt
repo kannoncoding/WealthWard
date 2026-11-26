@@ -27,7 +27,8 @@ internal fun JSONObject.debtEntries(debtId: String): List<DebtEntry> =
         f07Rows("checks").filter { it.getString("debtId") == debtId }.map { DebtEntry(it, verification = it.creditorBalance()) })
         .sortedBy { it.sequence }
 
-internal fun debtStatus(debt: Debt, entries: List<DebtEntry>): DebtStatus {
+internal fun debtStatus(schedule: DebtSchedule, entries: List<DebtEntry>): DebtStatus {
+    val debt = schedule.current.debt
     val active = entries.filterNot { it.voided }
     val principal = active.lastOrNull()?.resultingPrincipal ?: debt.openingMinor
     val latest = active.lastOrNull()
@@ -35,13 +36,13 @@ internal fun debtStatus(debt: Debt, entries: List<DebtEntry>): DebtStatus {
     val firstMonth = YearMonth.from(LocalDate.parse(debt.firstDueDate))
     val pending = if (principal == 0L) emptyList() else {
         val initialLast = firstMonth.plusMonths((debt.remainingMonths - 1L) * debt.intervalMonths)
-        val last = active.fold(initialLast) { end, entry ->
+        val last = active.filter { it.sequence > schedule.current.afterSequence }.fold(initialLast) { end, entry ->
             val extra = entry.payment?.takeIf { it.extra } ?: return@fold end
             val newTerm = extra.actualRemainingMonths ?: if (debt.extraPaymentPolicy == ExtraPaymentPolicy.REDUCE_TERM &&
                 debt.amortization == DebtAmortization.FIXED_MONTHLY) 1 else return@fold end
             maxOf(end, YearMonth.from(entry.date).plusMonths(newTerm.toLong() * debt.intervalMonths))
         }
-        debtInstallments(debt, active, last, LocalDate.now(BusinessTime.zone)).filter { it.pendingMinor > 0 }
+        debtInstallments(schedule, active, last, LocalDate.now(BusinessTime.zone)).filter { it.pendingMinor > 0 }
     }
     return DebtStatus(
         debt, principal, active.lastOrNull { it.verification != null }?.verification,
@@ -52,6 +53,8 @@ internal fun debtStatus(debt: Debt, entries: List<DebtEntry>): DebtStatus {
         pending.firstOrNull()?.expectedMinor ?: 0L,
         pending.size,
         pending.lastOrNull()?.dueDate,
+        hasHistory = entries.isNotEmpty(),
+        hasScheduledPayments = entries.any { it.payment?.installmentMonth != null },
     )
 }
 
@@ -109,32 +112,76 @@ private fun estimatedTerm(principal: Long, installment: Long, originalRemaining:
     return originalRemaining
 }
 
+internal data class DebtScheduleTerms(val debt: Debt, val afterSequence: Long = 0, val throughSequence: Long = Long.MAX_VALUE)
+
+internal data class DebtSchedule(
+    val current: DebtScheduleTerms,
+    val booked: Map<YearMonth, DebtScheduleTerms> = emptyMap(),
+)
+
+internal fun JSONObject.debtSchedule(original: Debt, entries: List<DebtEntry>): DebtSchedule {
+    val revisions = debtRevisions(original.id).associateBy { it.getString("requestId") }
+    if (revisions.values.none { it.has("debt") }) {
+        return DebtSchedule(DebtScheduleTerms(revisions.values.fold(original, Debt::applyRevision)))
+    }
+    val entriesByRequest = entries.associateBy { it.raw.getString("requestId") }
+    var lastSequence = 0L
+    var current = DebtScheduleTerms(original)
+    val booked = buildMap {
+        f07Rows("audit").forEach { audit ->
+            val request = audit.getString("requestId")
+            revisions[request]?.let { revision ->
+                val previous = current.debt
+                val updated = previous.applyRevision(revision)
+                val scheduleChanged = updated != previous.copy(
+                    name = updated.name, group = updated.group, suggestedAccountId = updated.suggestedAccountId,
+                )
+                current = DebtScheduleTerms(updated, if (scheduleChanged) lastSequence else current.afterSequence)
+            }
+            entriesByRequest[request]?.let { entry ->
+                val month = entry.payment?.installmentMonth
+                if (!entry.voided && month != null) {
+                    putIfAbsent(YearMonth.parse(month), current.copy(throughSequence = lastSequence))
+                }
+                lastSequence = entry.sequence
+            }
+        }
+    }
+    return DebtSchedule(current, booked)
+}
+
 internal fun commitmentInstallments(state: JSONObject, month: String): List<PlannedOccurrence> {
     val data = state.commitments()
     val until = YearMonth.parse(month)
     val today = LocalDate.now(BusinessTime.zone)
     return data.f07Rows("debts").flatMap { row ->
-        val debt = data.debtWithMaturity(row)
-        val entries = data.debtEntries(debt.id).filterNot { it.voided }
-        debtInstallments(debt, entries, until, today)
+        val original = row.debt()
+        val entries = data.debtEntries(original.id)
+        debtInstallments(state.debtSchedule(original, entries), entries.filterNot { it.voided }, until, today)
     }
 }
 
 private fun debtInstallments(
-    debt: Debt, entries: List<DebtEntry>, until: YearMonth, today: LocalDate,
+    schedule: DebtSchedule, entries: List<DebtEntry>, until: YearMonth, today: LocalDate,
 ): List<PlannedOccurrence> {
-    val firstDate = LocalDate.parse(debt.firstDueDate)
+    val current = schedule.current.debt
+    val firstDate = LocalDate.parse(current.firstDueDate)
     val first = YearMonth.from(firstDate)
     val paid = entries.filter { it.payment?.installmentMonth != null }.groupBy { YearMonth.parse(it.payment!!.installmentMonth!!) }
     val last = maxOf(until, paid.keys.maxOrNull() ?: until)
     val limit = ChronoUnit.MONTHS.between(first, last).coerceAtMost(1199)
-    return (0..limit step debt.intervalMonths.toLong()).mapNotNull { index ->
+    return (0..limit step current.intervalMonths.toLong()).mapNotNull { index ->
         val nominal = first.plusMonths(index)
+        val scheduleTerms = schedule.booked[nominal] ?: schedule.current
+        val debt = scheduleTerms.debt
         val due = PlanningMath.due(nominal, firstDate.dayOfMonth)
         val paymentEntries = paid[nominal].orEmpty()
         val beforeMonth = entries.filter { YearMonth.from(it.date) < nominal }
         val balance = beforeMonth.lastOrNull()?.resultingPrincipal ?: debt.openingMinor
-        val terms = debtTerms(debt, beforeMonth, nominal)
+        val applicableExtras = beforeMonth.filter {
+            it.sequence > scheduleTerms.afterSequence && it.sequence <= scheduleTerms.throughSequence
+        }
+        val terms = debtTerms(debt, applicableExtras, nominal)
         val totalPaid = f07Sum(paymentEntries.map { it.payment!!.totalMinor })
         val closed = (entries.lastOrNull()?.resultingPrincipal ?: debt.openingMinor) == 0L
         if (totalPaid == 0L && (terms.remainingMonths == 0 || balance == 0L || closed)) return@mapNotNull null
@@ -158,8 +205,8 @@ private fun debtInstallments(
         val pending = expected - totalPaid
         PlannedOccurrence(
             "${debtAccount(debt.id)}:$nominal:0", debtAccount(debt.id), 1, nominal.toString(), 0,
-            debt.name, debt.group, PlanNature.DEBT, debt.currency, due.toString(), expected, null,
-            totalPaid, pending, debt.suggestedAccountId, null, pending > 0 && due < today,
+            current.name, current.group, PlanNature.DEBT, current.currency, due.toString(), expected, null,
+            totalPaid, pending, current.suggestedAccountId, null, pending > 0 && due < today,
             paymentEntries.map { it.raw.getString("operationId") }, nominal.toString(), totalPaid,
         )
     }

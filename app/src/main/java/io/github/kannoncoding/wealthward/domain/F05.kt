@@ -1,6 +1,39 @@
 package io.github.kannoncoding.wealthward.domain
 
-import java.time.LocalDate
+import java.math.BigDecimal
+import java.math.MathContext
+import java.math.RoundingMode
+
+private val dotDecimal = Regex("""(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)""")
+private val commaDecimal = Regex("""(?:[0-9]+|[0-9]{1,3}(?:\.[0-9]{3})+),[0-9]+""")
+
+internal fun parseFxDecimal(input: String): BigDecimal? {
+ val value = input.trim()
+ return when {
+  dotDecimal.matches(value) -> value.toBigDecimalOrNull()
+  commaDecimal.matches(value) -> value.replace(".", "").replace(',', '.').toBigDecimalOrNull()
+  else -> null
+ }
+}
+
+internal class CrcPerUsdRate(private val rate: BigDecimal) {
+ init {
+  require(rate.signum() > 0)
+ }
+
+ fun convert(amount: Money): Money = when (amount.currency) {
+  Currency.USD -> amount.convert(Currency.CRC, rate)
+  Currency.CRC -> Money(
+   BigDecimal.valueOf(amount.minor).divide(rate, 0, RoundingMode.HALF_UP).longValueExact(),
+   Currency.USD,
+  )
+ }
+
+ fun destinationPerOrigin(origin: Currency): String = when (origin) {
+  Currency.USD -> rate
+  Currency.CRC -> BigDecimal.ONE.divide(rate, MathContext.DECIMAL128)
+ }.stripTrailingZeros().toPlainString()
+}
 
 data class ExpenseSplit(val category: String, val minor: Long, val purposeId: String? = null)
 data class CreditPaymentAllocation(val purchaseId: String, val minor: Long, val purposeId: String? = null, val sourceMinor: Long? = null)

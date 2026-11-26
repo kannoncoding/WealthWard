@@ -1,6 +1,7 @@
 package io.github.kannoncoding.wealthward.ui
 
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 import android.Manifest
@@ -69,33 +70,36 @@ internal fun f06Title(action:String) = mapOf("f06salary" to localized("Configura
   val account=ledger.accounts.find { it.id==occurrence.suggestedAccountId }
   val termDebt = occurrence.templateId.startsWith("term-debt:")
   val applied = if(termDebt) localized("Aplicado a cuota") else localized("Consumo vinculado")
-  InfoCard("${occurrence.dueDate} · ${occurrence.displayName()}", localized("{0} · {1}\nCuenta sugerida: {2}\nEstimado {3}\nConfirmado {4}\nReal pagado {5}\n{6} {7}\nTu pendiente {8} · {9}", natureName(occurrence.nature), if (occurrence.nature == PlanNature.INCOME) localized("Ingresos") else occurrence.group, account?.name ?: localized("Sin elegir"), money(occurrence.expectedMinor,occurrence.currency), occurrence.confirmedMinor?.let { money(it,occurrence.currency) } ?: localized("Por confirmar"), money(occurrence.cashPaidMinor,occurrence.currency), applied, money(occurrence.paidMinor,occurrence.currency), money(occurrence.pendingMinor,occurrence.currency), if(occurrence.pendingMinor==0L && occurrence.paidMinor==0L) localized("Sin saldo pendiente") else if(occurrence.pendingMinor==0L) if(occurrence.nature==PlanNature.INCOME) localized("Recibido") else localized("Pagado") else if(occurrence.overdue) localized("Vencido") else if(occurrence.paidMinor>0) localized("Parcial") else localized("Pendiente")), if(occurrence.overdue) 1 else 3)
-  if(occurrence.paymentPendingMinor>0) {
-   if(termDebt) {
-    Action(localized("Pagar cuota · {0}", occurrence.displayName())) { open("f07installment", "${occurrence.nominalMonth}/${occurrence.templateId.removePrefix("term-debt:")}") }
-   } else {
-   Action(if(occurrence.nature==PlanNature.INCOME) localized("Registrar recepción · {0}", occurrence.displayName()) else localized("Pagar · {0}", occurrence.displayName())) { open("f06pay",occurrence.id) }
-   Action(localized("Confirmar Monto/Importe · {0}", occurrence.displayName())) { open("f06confirm",occurrence.id) }
-   Action(localized("Vincular movimiento · {0}", occurrence.displayName())) { open("f06link",occurrence.id) }
-  Action(localized("Cambiar periodo de financiación · {0}", occurrence.displayName())) { open("f06financing",occurrence.id) }
-   if(occurrence.purposeId!=null) Action(localized("Financiar reserva · {0}", occurrence.displayName())) { open("f06fund",occurrence.id) }
-   }
-  }
+  val actions = if (occurrence.paymentPendingMinor > 0) occurrenceActions(occurrence, open, calendar = true) else emptyList()
+  RecordCard("${occurrence.dueDate} · ${occurrence.displayName()}", localized("{0} · {1}\nCuenta sugerida: {2}\nEstimado {3}\nConfirmado {4}\nReal pagado {5}\n{6} {7}\nTu pendiente {8} · {9}", natureName(occurrence.nature), if (occurrence.nature == PlanNature.INCOME) localized("Ingresos") else occurrence.group, account?.name ?: localized("Sin elegir"), money(occurrence.expectedMinor,occurrence.currency), occurrence.confirmedMinor?.let { money(it,occurrence.currency) } ?: localized("Por confirmar"), money(occurrence.cashPaidMinor,occurrence.currency), applied, money(occurrence.paidMinor,occurrence.currency), money(occurrence.pendingMinor,occurrence.currency), if(occurrence.pendingMinor==0L && occurrence.paidMinor==0L) localized("Sin saldo pendiente") else if(occurrence.pendingMinor==0L) if(occurrence.nature==PlanNature.INCOME) localized("Recibido") else localized("Pagado") else if(occurrence.overdue) localized("Vencido") else if(occurrence.paidMinor>0) localized("Parcial") else localized("Pendiente")), actions)
  }
  if(plan.occurrences.isEmpty()) Text(localized("Sin vencimientos generados. Abre el periodo después de configurar ingresos y obligaciones."))
 }
 
-private val configSections get() = linkedMapOf(
- "sectionIncome" to localized("Ingresos"),
+private val financeSections get() = linkedMapOf(
+ "sectionFinancialAccounts" to localized("Cuentas"),
  "sectionBills" to localized("Gastos y Suscripciones"),
- "sectionDebt" to localized("Deudas"),
+ "sectionIncome" to localized("Ingresos"),
+ "sectionDebt" to localized("Deudas y Préstamos"),
+ "sectionFinancialSavings" to localized("Ahorros y Metas"),
+)
+
+private val configSections get() = linkedMapOf(
  "f06reminders" to localized("Recordatorios - Preferencias y Permisos"),
- "sectionAccounts" to localized("Cuentas"),
  "sectionBackup" to localized("Respaldo y exportar"),
  "sectionAppearance" to localized("Configuración"),
 )
 internal fun configurationTitle(screen: String) =
- if (screen == "sectionLanguage") "Idioma / Language" else configSections[screen].orEmpty()
+ if (screen == "sectionLanguage") "Idioma / Language" else (financeSections[screen] ?: configSections[screen]).orEmpty()
+
+@Composable internal fun FinanceMenu(open: (String, String) -> Unit) {
+ Panel {
+  financeSections.entries.forEachIndexed { index, (route, title) ->
+   if (index > 0) GoldClasp()
+   Action(title, menu = true) { open(route, "") }
+  }
+ }
+}
 
 private fun IncomeFrequency.incomeLabel() = when (this) {
  IncomeFrequency.MONTHLY -> localized("Mensual")
@@ -133,8 +137,8 @@ private fun LocalDate.onWeekday(day: java.time.DayOfWeek?): LocalDate =
    plan.extraIncomes.groupBy { it.id }.values.forEach { versions ->
     val income = versions.maxBy { it.version }
     val status = if (income.paused) localized("Pausada") else localized("Activa")
-    InfoCard(income.name,"${money(income.expectedMinor,income.currency)} · ${income.frequency.incomeLabel()} · $status",0)
-    Action(localized("Editar ingreso recurrente · {0}",income.name)) { open("f06extra",income.id) }
+    RecordCard(income.name, "${money(income.expectedMinor,income.currency)} · ${income.frequency.incomeLabel()} · $status",
+     listOf(recordAction(localized("Editar ingreso recurrente"), income.name) { open("f06extra", income.id) }))
    }
    PendingPayments(plan.occurrences.filter { it.nature==PlanNature.INCOME }, open)
   }
@@ -142,23 +146,27 @@ private fun LocalDate.onWeekday(day: java.time.DayOfWeek?): LocalDate =
    Action(localized("Crear un nuevo gasto")) { open("f06template", "FIXED") }
    Action(localized("Crear una suscripción")) { open("f06template", "SUBSCRIPTION") }
    GoldClasp()
-   Text(localized("Lista de gastos fijos y suscripciones"), style = MaterialTheme.typography.titleLarge)
+   ExpenseSectionTitle(localized("Lista de gastos fijos y suscripciones"))
    val bills = plan.occurrences.filter { it.nature in setOf(PlanNature.FIXED, PlanNature.SUBSCRIPTION) }.groupBy { it.templateId }
- plan.templates.groupBy { it.id }.values.forEachIndexed { index, versions ->
-  if (index > 0) GoldClasp()
-  val item=versions.maxBy { it.version }
-  InfoCard(item.name, localized("{0} · {1}\nDesde {2} · versión {3} · {4}", natureName(item.nature), money(item.minor,item.currency), item.effectiveMonth, item.version, if(item.cancelled) localized("Cancelada") else if(item.paused) localized("Pausada") else localized("Activa")) + if(item.frequency==Recurrence.ANNUAL) localized("\nAporte mensual previsto {0} {1}; financiar requiere dinero existente.", decimal(item.monthlyContributionMinor), item.currency) else "", 0)
-  Action(localized("Revisar / pausar · {0}", item.name)) { open("f06template",item.id) }
-  if(item.frequency==Recurrence.ANNUAL && item.purposeId!=null) Action(localized("Aportar a reserva anual · {0}", item.name)) { open("f06purpose",item.id) }
-  var showHistory by remember(item.id) { mutableStateOf(false) }
-  Action(localized("Historial de revisiones · {0}", item.name)) { showHistory=!showHistory }
-  if(showHistory) versions.sortedBy { it.version }.forEach { revision ->
-   InfoCard(localized("Versión {0} · desde {1}", revision.version, revision.effectiveMonth), localized("{0} · {1}\nGrupo {2} · {3}\nDías nominales {4}{5}\n{6} · {7}\nMotivo: {8}", revision.name, money(revision.minor,revision.currency), revision.group, natureName(revision.nature), revision.day, if(revision.frequency==Recurrence.TWO_SLOTS) localized(" y {0}", revision.secondDay) else "", revision.frequency, if(revision.cancelled) localized("Cancelada") else if(revision.paused) localized("Pausada") else localized("Activa"), revision.reason) + if(revision.householdTotalMinor!=null) localized("\nTotal hogar {0} · mi porcentaje {1}", money(revision.householdTotalMinor,revision.currency), revision.ownPercent ?: localized("Monto/Importe fijo")) else "",4)
-  }
-  PendingPayments(bills[item.id].orEmpty(), open)
- }
+   plan.templates.groupBy { it.id }.values.forEachIndexed { index, versions ->
+    if (index > 0) GoldClasp()
+    val item=versions.maxBy { it.version }
+    var showHistory by remember(item.id) { mutableStateOf(false) }
+    val actions = buildList {
+     add(recordAction(localized("Revisar / pausar"), item.name) { open("f06template", item.id) })
+     if (item.frequency == Recurrence.ANNUAL && item.purposeId != null) {
+      add(recordAction(localized("Aportar a reserva anual"), item.name) { open("f06purpose", item.id) })
+     }
+     add(recordAction(localized("Historial de revisiones"), item.name) { showHistory = !showHistory })
+    }
+    RecordCard(item.name, localized("{0} · {1}\nDesde {2} · versión {3} · {4}", natureName(item.nature), money(item.minor,item.currency), item.effectiveMonth, item.version, if(item.cancelled) localized("Cancelada") else if(item.paused) localized("Pausada") else localized("Activa")) + if(item.frequency==Recurrence.ANNUAL) localized("\nAporte mensual previsto {0} {1}; financiar requiere dinero existente.", decimal(item.monthlyContributionMinor), item.currency) else "", actions, centeredTitle = true)
+    if(showHistory) versions.sortedBy { it.version }.forEach { revision ->
+     InfoCard(localized("Versión {0} · desde {1}", revision.version, revision.effectiveMonth), localized("{0} · {1}\nGrupo {2} · {3}\nDías nominales {4}{5}\n{6} · {7}\nMotivo: {8}", revision.name, money(revision.minor,revision.currency), revision.group, natureName(revision.nature), revision.day, if(revision.frequency==Recurrence.TWO_SLOTS) localized(" y {0}", revision.secondDay) else "", revision.frequency, if(revision.cancelled) localized("Cancelada") else if(revision.paused) localized("Pausada") else localized("Activa"), revision.reason) + if(revision.householdTotalMinor!=null) localized("\nTotal hogar {0} · mi porcentaje {1}", money(revision.householdTotalMinor,revision.currency), revision.ownPercent ?: localized("Monto/Importe fijo")) else "",4)
+    }
+    PendingPayments(bills[item.id].orEmpty(), open, centeredTitle = true)
+   }
    GoldClasp(double = true)
-   Text(localized("Más opciones"), style = MaterialTheme.typography.titleLarge)
+   ExpenseSectionTitle(localized("Más opciones"))
    Action(localized("Editar presupuesto por categoría")) { open("f06budget", "") }
    Action(localized("Preparar otro mes")) { open("f06copy", "") }
    Action(localized("Ajustar pronóstico")) { open("f08", "") }
@@ -168,25 +176,51 @@ private fun LocalDate.onWeekday(day: java.time.DayOfWeek?): LocalDate =
     PendingPayments(commitments.installments.filter { it.templateId == "term-debt:$debtId" }, open)
    }
   }
-  "sectionAccounts" -> Action(localized("Importar cuentas")) { open("import", "") }
   "sectionBackup" -> F10Configuration { open(it, "") }
  }
 }
 
-@Composable private fun PendingPayments(occurrences: List<PlannedOccurrence>, open: (String,String) -> Unit) {
+@Composable private fun ExpenseSectionTitle(title: String) {
+ Text(title, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
+}
+
+@Composable private fun PendingPayments(
+ occurrences: List<PlannedOccurrence>,
+ open: (String, String) -> Unit,
+ centeredTitle: Boolean = false,
+) {
  occurrences.sortedBy { it.dueDate }.forEach { item ->
-  val term = item.templateId.startsWith("term-debt:")
-  InfoCard(item.displayName(), "${item.dueDate} · " +
-   if(item.pendingMinor == 0L) if(item.previouslyDeducted) localized("Pagado · ya descontado") else localized("Registrado") else localized("Pendiente {0}", money(item.pendingMinor,item.currency)), 2)
-  if(item.pendingMinor > 0) {
-   if(term) Action(localized("Pagar cuota · {0}", item.displayName())) {
-    open("f07installment", "${item.nominalMonth}/${item.templateId.removePrefix("term-debt:")}")
-   } else {
-    Action(if(item.nature == PlanNature.INCOME) localized("Registrar recepción · {0}", item.displayName()) else localized("Registrar pago · {0}", item.displayName())) { open("f06pay",item.id) }
-    Action(localized("Confirmar Monto/Importe · {0}", item.displayName())) { open("f06confirm",item.id) }
-    Action(localized("Vincular movimiento · {0}", item.displayName())) { open("f06link",item.id) }
-    Action(localized("Cambiar periodo de financiación · {0}", item.displayName())) { open("f06financing",item.id) }
-   }
+  val status = if (item.pendingMinor == 0L) {
+   if (item.previouslyDeducted) localized("Pagado · ya descontado") else localized("Registrado")
+  } else localized("Pendiente {0}", money(item.pendingMinor, item.currency))
+  RecordCard(item.displayName(), "${item.dueDate} · $status",
+   if (item.pendingMinor > 0) occurrenceActions(item, open) else emptyList(), centeredTitle)
+ }
+}
+
+private fun occurrenceActions(
+ item: PlannedOccurrence,
+ open: (String, String) -> Unit,
+ calendar: Boolean = false,
+): List<CompactAction> {
+ val name = item.displayName()
+ if (item.templateId.startsWith("term-debt:")) {
+  return listOf(recordAction(localized("Pagar cuota"), name) {
+   open("f07installment", "${item.nominalMonth}/${item.templateId.removePrefix("term-debt:")}")
+  })
+ }
+ val paymentLabel = when {
+  item.nature == PlanNature.INCOME -> localized("Registrar recepción")
+  calendar -> localized("Pagar")
+  else -> localized("Registrar pago")
+ }
+ return buildList {
+  add(recordAction(paymentLabel, name) { open("f06pay", item.id) })
+  add(recordAction(localized("Confirmar Monto/Importe"), name) { open("f06confirm", item.id) })
+  add(recordAction(localized("Vincular movimiento"), name) { open("f06link", item.id) })
+  add(recordAction(localized("Cambiar periodo de financiación"), name) { open("f06financing", item.id) })
+  if (calendar && item.purposeId != null) {
+   add(recordAction(localized("Financiar reserva"), name) { open("f06fund", item.id) })
   }
  }
 }

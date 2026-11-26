@@ -6,7 +6,7 @@ import androidx.compose.runtime.Composable
 import io.github.kannoncoding.wealthward.domain.*
 
 internal fun debtKindName(kind: DebtKind) = when (kind) {
- DebtKind.PERSONAL_LOAN -> localized("Préstamo personal")
+ DebtKind.PERSONAL_LOAN -> localized("Préstamo")
  DebtKind.INSTALLMENT -> localized("Compra en cuotas")
  DebtKind.MORTGAGE -> localized("Hipoteca")
  DebtKind.OTHER -> localized("Otra deuda")
@@ -52,7 +52,19 @@ internal fun debtEstimateExplanation(mode: String, amortization: DebtAmortizatio
  plan.debts.forEachIndexed { index, status ->
   if (index > 0) GoldClasp()
   val debt = status.debt
-  InfoCard(debt.name, buildString {
+  val actions = buildList {
+   if (debt.kind == DebtKind.PERSONAL_LOAN) {
+    add(recordAction(localized("Editar préstamo"), debt.name) { open("f07editLoan", debt.id) })
+   }
+   if (debt.kind == DebtKind.MORTGAGE || debt.maturityDate != null) {
+    add(recordAction(localized("Editar vencimiento"), debt.name) { open("f07maturity", debt.id) })
+   }
+   add(recordAction(localized("Verificar saldo"), debt.name) { open("f07verify", debt.id) })
+   if (status.principalMinor > 0) {
+    add(recordAction(localized("Registrar abono extraordinario"), debt.name) { open("f07extra", debt.id) })
+   }
+  }
+  RecordCard(debt.name, buildString {
    appendLine("${debt.group} · ${debtKindName(debt.kind)}")
    appendLine(localized("Principal registrado {0}", money(status.principalMinor, debt.currency)))
    val opening = money(debt.openingMinor, debt.currency)
@@ -83,12 +95,7 @@ internal fun debtEstimateExplanation(mode: String, amortization: DebtAmortizatio
    status.creditorBalance?.let {
     append(localized("Principal informado por el acreedor: {0} · {1}\n{2}", money(it.principalMinor, debt.currency), it.date, it.reference))
    } ?: append(localized("Sin verificación del acreedor"))
-  }, 1)
-  if (debt.kind == DebtKind.MORTGAGE || debt.maturityDate != null) {
-   Action(localized("Editar vencimiento · {0}", debt.name)) { open("f07maturity", debt.id) }
-  }
-  Action(localized("Verificar saldo · {0}", debt.name)) { open("f07verify", debt.id) }
-  if (status.principalMinor > 0) Action(localized("Registrar abono extraordinario · {0}", debt.name)) { open("f07extra", debt.id) }
+  }, actions)
   status.payments.forEach { payment ->
    val account = ledger.accounts.find { it.id == payment.accountId }
    InfoCard("${payment.date} · ${if (payment.extra) localized("Abono extraordinario") else localized("Cuota {0}", payment.installmentMonth)}",
@@ -104,7 +111,20 @@ internal fun debtEstimateExplanation(mode: String, amortization: DebtAmortizatio
  Action(localized("Crear meta de ahorro"), accentText = true) { open("f07goal", "") }
  plan.savings.forEach { status ->
   val goal = status.goal
-  InfoCard(goal.name, buildString {
+  val actions = buildList {
+   add(recordAction(localized("Aportar"), goal.name) { open("f07contribute", goal.id) })
+   if (status.fundedMinor > 0) {
+    add(recordAction(localized("Retirar"), goal.name) { open("f07withdraw", goal.id) })
+    if (plan.savings.any { it.goal.id != goal.id && it.goal.currency == goal.currency }) {
+     add(recordAction(localized("Reasignar"), goal.name) { open("f07reallocate", goal.id) })
+    }
+    if (ledger.accounts.count { !it.archived && it.kind == "CASH" && it.currency == goal.currency } > 1) {
+     add(recordAction(localized("Transferir ahorro"), goal.name) { open("f07transfer", goal.id) })
+    }
+   }
+   add(recordAction(localized("Registrar aporte externo"), goal.name) { open("f07external", goal.id) })
+  }
+  RecordCard(goal.name, buildString {
    appendLine(localized("{0} · Ahorro propio", goal.group))
    appendLine(localized("Meta {0} para {1} · Prioridad {2}", money(goal.targetMinor, goal.currency), goal.targetDate, goal.priority))
    appendLine(localized("Financiado {0}", money(status.fundedMinor, goal.currency)))
@@ -114,18 +134,7 @@ internal fun debtEstimateExplanation(mode: String, amortization: DebtAmortizatio
    appendLine(localized("Aporte mensual previsto {0}", money(goal.monthlyMinor, goal.currency)))
    appendLine(localized("Aportado en el periodo {0}", money(status.contributedThisMonthMinor, goal.currency)))
    append(localized("Aporte adicional alcanzable en el periodo, estimado: {0}", money(status.attainableThisMonthMinor, goal.currency)))
-  }, 3)
-  Action(localized("Aportar · {0}", goal.name)) { open("f07contribute", goal.id) }
-  if (status.fundedMinor > 0) {
-   Action(localized("Retirar · {0}", goal.name)) { open("f07withdraw", goal.id) }
-   if (plan.savings.any { it.goal.id != goal.id && it.goal.currency == goal.currency }) {
-    Action(localized("Reasignar · {0}", goal.name)) { open("f07reallocate", goal.id) }
-   }
-   if (ledger.accounts.count { !it.archived && it.kind == "CASH" && it.currency == goal.currency } > 1) {
-    Action(localized("Transferir ahorro · {0}", goal.name)) { open("f07transfer", goal.id) }
-   }
-  }
-  Action(localized("Registrar aporte externo · {0}", goal.name)) { open("f07external", goal.id) }
+  }, actions)
   status.events.forEach { event ->
    Text("${event.date} · ${savingActionName(event.action)} · ${money(event.minor, goal.currency)}${event.recipient?.let { " · $it" }.orEmpty()}")
   }
@@ -137,15 +146,17 @@ internal fun debtEstimateExplanation(mode: String, amortization: DebtAmortizatio
  plan.projects.forEach { status ->
   val project = status.project
   val goal = plan.savings.find { it.goal.id == project.goalId }?.goal
-  InfoCard(project.name, localized("{0} · Proyecto\nObjetivo de financiación {1}\nFinanciado {2}{3}", project.group, money(project.targetMinor, project.currency), money(status.fundedMinor, project.currency), goal?.let { localized("\nMeta vinculada: {0}", it.name) }.orEmpty()), 1)
-  Action(localized("Añadir partida · {0}", project.name)) { open("f07item", project.id) }
+  RecordCard(project.name, localized("{0} · Proyecto\nObjetivo de financiación {1}\nFinanciado {2}{3}", project.group, money(project.targetMinor, project.currency), money(status.fundedMinor, project.currency), goal?.let { localized("\nMeta vinculada: {0}", it.name) }.orEmpty()),
+   listOf(recordAction(localized("Añadir partida"), project.name) { open("f07item", project.id) }))
   status.items.forEach { item ->
-   InfoCard(item.item.name, localized("Estimado {0}\nReal {1}", money(item.item.estimatedMinor, project.currency), money(item.actualMinor, project.currency)), 2)
+   RecordCard(item.item.name, localized("Estimado {0}\nReal {1}", money(item.item.estimatedMinor, project.currency), money(item.actualMinor, project.currency)),
+    listOf(
+     recordAction(localized("Vincular pago existente"), item.item.name) { open("f07projectlink", item.item.id) },
+     recordAction(localized("Registrar pago real"), item.item.name) { open("f07projectpay", item.item.id) },
+    ))
    item.payments.forEach { payment ->
     ledger.operations.find { it.id == payment.operationId }?.let { Text(localized("Movimiento vinculado: {0} · {1}", it.date, it.merchant.ifBlank { it.type })) }
    }
-   Action(localized("Vincular pago existente · {0}", item.item.name)) { open("f07projectlink", item.item.id) }
-   Action(localized("Registrar pago real · {0}", item.item.name)) { open("f07projectpay", item.item.id) }
   }
  }
 }

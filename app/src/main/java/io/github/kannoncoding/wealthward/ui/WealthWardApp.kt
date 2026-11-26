@@ -31,7 +31,7 @@ import java.math.RoundingMode
 import java.time.LocalDate
 import java.util.UUID
 
-private val Tabs get() = listOf(localized("Resumen"), localized("Movimientos"), localized("Cuentas"), localized("Metas"), localized("Config"))
+private val Tabs get() = listOf(localized("Resumen"), localized("Movimientos"), localized("Finanzas"), localized("Config"))
 internal fun money(minor: Long, currency: Currency) = "${currency.name} ${BigDecimal.valueOf(minor, 2).toPlainString()}"
 internal fun decimal(minor: Long) = BigDecimal.valueOf(minor, 2).toPlainString()
 internal fun total(values: Iterable<Long>) = values.fold(BigDecimal.ZERO) { sum, value -> sum.add(BigDecimal.valueOf(value, 2)) }.toPlainString()
@@ -317,7 +317,7 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
   }
   val scroll = key(selected, screen, subject, accountId) { rememberScrollState() }
   Scaffold(containerColor = palette.gradientEnd, contentColor = palette.ink, snackbarHost = { SnackbarHost(exportMessages) }, bottomBar = {
-   if (screen.isEmpty()) WealthNavigationBar(Tabs, selected, ::selectTab)
+   if (screen.isEmpty()) WealthNavigationBar(Tabs, selected.coerceAtMost(Tabs.lastIndex), icons = listOf(0, 1, 2, 4), onSelect = ::selectTab)
   }) { padding ->
    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(palette.base, palette.gradientEnd))).padding(padding), contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
     Column(Modifier.widthIn(max = 800.dp).fillMaxWidth().verticalScroll(scroll).imePadding().padding(16.dp * uiSize.spacingScale), verticalArrangement = Arrangement.spacedBy(12.dp * uiSize.spacingScale)) {
@@ -334,7 +334,7 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
      )
      if (!summaryHome) Text(when {
       screen.startsWith("section") -> configurationTitle(screen)
-      screen.isEmpty() -> Tabs[selected]
+      screen.isEmpty() -> Tabs[selected.coerceAtMost(Tabs.lastIndex)]
       screen == "upcoming" -> localized("Pagos pendientes del mes")
       screen == "f08" -> localized("Pronóstico de cierre")
       screen == "f10Backup" -> localized("Crear respaldo")
@@ -347,10 +347,12 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
      if (!summaryHome && (!ready || busy)) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = localized("Procesando") })
      if (!summaryHome && screen != "f10Summary" && failure.isNotEmpty()) Text(failure, color = MaterialTheme.colorScheme.error, modifier = Modifier.focusRequester(errorFocus).focusable().semantics { liveRegion = LiveRegionMode.Assertive })
      if (!summaryHome && screen != "f10Summary" && success.isNotEmpty()) Text(success, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-     if (!summaryHome && commitmentError.isNotEmpty() && (screen.startsWith("f07") || screen.isEmpty() && selected in listOf(0, 3, 4))) {
+     if (!summaryHome && commitmentError.isNotEmpty() && (screen.startsWith("f07") || screen == "sectionFinancialSavings" || screen == "sectionDebt")) {
       Text(commitmentError, color = MaterialTheme.colorScheme.error, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
      }
-     if (screen.isNotEmpty()) key(formRevision) {
+     val accountSection = screen == "sectionFinancialAccounts"
+     val savingsSection = screen == "sectionFinancialSavings"
+     if (screen.isNotEmpty() && !accountSection && !savingsSection) key(formRevision) {
       if (screen == "upcoming") {
        MonthlySummary(currentMonth, currentDay, snapshot, plan, commitmentPlan, projection.result, showAllPayments = true, open = ::open)
       } else if (screen == "sectionAppearance") {
@@ -392,9 +394,9 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
       } else if(screen.startsWith("f06")) F06Form(screen,subject,formMonth,plan,snapshot,drafts,busy,{ failure=it },::submitPlan,{ back() })
       else if(screen.startsWith("f07")) F07Form(screen,subject,formMonth,commitmentPlan,snapshot,drafts,busy,{ failure=it },::submitCommitment,{ back() })
       else F05Form(screen, subject, snapshot, drafts, busy, onError = { failure = it }, onSubmit = ::submit, onCancel = { back() }, preview = { rows -> repository.previewImport(rows) })
-     } else when (selected) {
-      0 -> MonthlySummary(currentMonth,currentDay,snapshot,plan,commitmentPlan,projection.result, open = ::open)
-      1 -> {
+     } else when {
+      screen.isEmpty() && selected == 0 -> MonthlySummary(currentMonth,currentDay,snapshot,plan,commitmentPlan,projection.result, open = ::open)
+      screen.isEmpty() && selected == 1 -> {
        Text(localized("Registrar movimiento"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
        MovementActions(::open)
        GoldClasp()
@@ -409,9 +411,10 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
        if (movements.isNotEmpty() && snapshot.holds.isNotEmpty()) GoldClasp()
        HoldCards(snapshot, ::open)
       }
-      2 -> {
+      accountSection -> {
        val monthlyBills = monthlyAccountBills(plan, currentMonth)
        Action(localized("Crear cuenta"), accent = true) { open("account") }
+       if (accountId.isEmpty()) Action(localized("Importar cuentas")) { open("import") }
        if (accountId.isNotEmpty()) {
         CompactRecordAction(localized("← Todos los productos")) { back() }
         snapshot.accounts.find { it.id == accountId }?.let { account ->
@@ -459,19 +462,25 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
         }
        }
       }
-      3 -> {
+      savingsSection -> {
        Panel {
         val target = plan.plans.filter { it.month == currentMonth }.maxByOrNull { it.version }
         Text(localized("Meta Sobrante"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Text(target?.takeIf { it.targetMinor > 0 }?.let { money(it.targetMinor, it.targetCurrency) } ?: localized("Sin meta"),
          style = MaterialTheme.typography.headlineSmall)
-        Action(localized("Configurar Meta Sobrante"), accent = true) { open("f06target") }
+        RecordActionGrid(listOf(CompactAction(localized("Configurar Meta Sobrante"), localized("Configurar Meta Sobrante")) { open("f06target") }))
        }
        GoldClasp()
        SavingAndProjectCards(commitmentPlan, snapshot, ::open)
-       Text(localized("Propósitos con dinero existente"), style = MaterialTheme.typography.titleMedium)
-       Action(localized("Asignar o crear propósito")) { open("reserve") }; Action(localized("Liberar reserva")) { open("release") }
-       Action(localized("Redistribuir entre propósitos")) { open("redistribute") }; Action(localized("Mover reserva a otra cuenta")) { open("moveReserve") }
+       Panel {
+        Text(localized("Propósitos con dinero existente"), style = MaterialTheme.typography.titleMedium)
+        RecordActionGrid(listOf(
+         CompactAction(localized("Asignar o crear propósito"), localized("Asignar o crear propósito")) { open("reserve") },
+         CompactAction(localized("Liberar reserva"), localized("Liberar reserva")) { open("release") },
+         CompactAction(localized("Redistribuir entre propósitos"), localized("Redistribuir entre propósitos")) { open("redistribute") },
+         CompactAction(localized("Mover reserva a otra cuenta"), localized("Mover reserva a otra cuenta")) { open("moveReserve") },
+        ))
+       }
        GoldClasp()
        snapshot.accounts.filter { it.reserves.isNotEmpty() }.forEachIndexed { index, account ->
         if (index > 0) GoldClasp()
@@ -489,7 +498,8 @@ internal class Drafts(val values: MutableMap<String, String>, private val persis
        }
        if (snapshot.accounts.none { it.reserves.isNotEmpty() }) Text(localized("Aún no hay reservas. Asigna dinero disponible para comenzar."))
       }
-      4 -> ConfigurationMenu(::open)
+      selected == 2 -> FinanceMenu(::open)
+      else -> ConfigurationMenu(::open)
      }
      Spacer(Modifier.height(24.dp))
     }

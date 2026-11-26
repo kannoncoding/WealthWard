@@ -76,16 +76,28 @@ class F08Repository(private val db: WealthDatabase) {
             emptyList()
         } else reserveRows
         val currentCommitments = state.commitments()
+        val loanEdits = currentCommitments.loanEdits()
+        val editedLoanIds = loanEdits.map { it.getJSONObject("debt").getString("id") }.toSet()
         val cutCommitments = JSONObject().apply {
             put("payloadVersion", 1)
             commitmentTables.forEach { table ->
                 put(table, JSONArray(currentCommitments.f07Rows(table).filter { row ->
-                    val day = row.f07Text("date") ?: (if (table == "debts") row.f07Text("openingDate") else null)
+                    val day = if (table == "debts" && row.getString("id") in editedLoanIds) {
+                        state.revisedDebt(row.debt()).openingDate
+                    } else {
+                        row.f07Text("date") ?: (if (table == "debts") row.f07Text("openingDate") else null)
+                    }
                     day == null || LocalDate.parse(day) <= cutoff
                 }))
             }
+            if (loanEdits.isNotEmpty()) {
+                put("loanEdits", JSONArray(loanEdits))
+                put("debtMaturityEdits", JSONArray(currentCommitments.debtMaturityEdits().filter {
+                    it.getString("debtId") in editedLoanIds
+                }))
+            }
         }
-        val atCut = JSONObject().put("f07", cutCommitments)
+        val atCut = JSONObject().put("f07", cutCommitments).put("audit", state.getJSONArray("audit"))
         val rawOccurrences = planState.f07Rows("occurrences").filter { !it.optBoolean("suppressed") }
         if (historical && rawOccurrences.any {
             !it.isNull("confirmedMinor") || it.getString("financingMonth") != it.getString("nominalMonth")

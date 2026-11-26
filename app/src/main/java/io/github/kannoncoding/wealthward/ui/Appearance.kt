@@ -227,7 +227,7 @@ internal fun TabIcon(index: Int, color: Color) {
 }
 
 @Composable
-internal fun WealthNavigationBar(tabs: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+internal fun WealthNavigationBar(tabs: List<String>, selected: Int, icons: List<Int> = tabs.indices.toList(), onSelect: (Int) -> Unit) {
     if (tabs.isEmpty()) return
     val palette = LocalPalette.current
     val gap = 2.dp
@@ -261,7 +261,7 @@ internal fun WealthNavigationBar(tabs: List<String>, selected: Int, onSelect: (I
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    TabIcon(index, if (active) Turquoise else palette.ink)
+                    TabIcon(icons[index], if (active) Turquoise else palette.ink)
                     Text(title, color = if (active) Turquoise else palette.ink, style = labelStyle, softWrap = false, maxLines = 1, textAlign = TextAlign.Center)
                 }
             }

@@ -31,9 +31,13 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 internal data class CompactAction(val label: String, val shortLabel: String, val onClick: () -> Unit)
+
+internal fun recordAction(title: String, subject: String, onClick: () -> Unit): CompactAction =
+    CompactAction("$title · $subject", title, onClick)
 
 @Composable
 internal fun MovementActions(open: (String, String) -> Unit) {
@@ -67,35 +71,73 @@ private fun CompactActionGrid(actions: List<CompactAction>) {
             maxWidth >= readableCell * 2 + gap -> 2
             else -> 1
         }
-        Column(verticalArrangement = Arrangement.spacedBy(gap)) {
-            actions.chunked(columns).forEach { row ->
-                Row(
-                    Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(gap),
-                ) {
-                    row.forEach { action ->
-                        Box(
-                            Modifier.weight(1f).fillMaxHeight().heightIn(min = 48.dp)
-                                .actionSurface()
-                                .clickable(role = Role.Button, onClick = action.onClick)
-                                .semantics { contentDescription = action.label }
-                                .padding(horizontal = 4.dp, vertical = 6.dp * spacing),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                action.shortLabel,
-                                modifier = Modifier.clearAndSetSemantics { },
-                                color = palette.ink,
-                                style = MaterialTheme.typography.labelMedium,
-                                textAlign = TextAlign.Center,
-                                maxLines = 2,
-                            )
-                        }
+        ActionGridRows(actions, columns, gap, palette.ink, 2)
+    }
+}
+
+@Composable
+internal fun RecordActionGrid(actions: List<CompactAction>) {
+    if (actions.isEmpty()) return
+    ActionGridRows(actions, 2, 6.dp * LocalUiSize.current.spacingScale, LocalPalette.current.accent, Int.MAX_VALUE)
+}
+
+@Composable
+private fun ActionGridRows(
+    actions: List<CompactAction>,
+    columns: Int,
+    gap: androidx.compose.ui.unit.Dp,
+    textColor: androidx.compose.ui.graphics.Color,
+    maxLines: Int,
+) {
+    val spacing = LocalUiSize.current.spacingScale
+    Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+        actions.chunked(columns).forEach { row ->
+            Row(
+                Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                horizontalArrangement = Arrangement.spacedBy(gap),
+            ) {
+                row.forEach { action ->
+                    Box(
+                        Modifier.weight(1f).fillMaxHeight().heightIn(min = 48.dp)
+                            .actionSurface()
+                            .clickable(role = Role.Button, onClick = action.onClick)
+                            .semantics { contentDescription = action.label }
+                            .padding(horizontal = 4.dp, vertical = 6.dp * spacing),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            action.shortLabel,
+                            modifier = Modifier.clearAndSetSemantics { },
+                            color = textColor,
+                            style = MaterialTheme.typography.labelMedium,
+                            textAlign = TextAlign.Center,
+                            maxLines = maxLines,
+                        )
                     }
-                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
                 }
+                repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
+    }
+}
+
+@Composable
+internal fun RecordCard(
+    title: String,
+    detail: String,
+    actions: List<CompactAction>,
+    centeredTitle: Boolean = false,
+) {
+    Panel {
+        Text(
+            title,
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = if (centeredTitle) TextAlign.Center else TextAlign.Start,
+            style = if (centeredTitle) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(detail, style = MaterialTheme.typography.bodyMedium)
+        RecordActionGrid(actions)
     }
 }
 

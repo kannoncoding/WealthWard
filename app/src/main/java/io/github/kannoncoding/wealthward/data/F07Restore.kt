@@ -54,13 +54,15 @@ internal fun validateCommitmentRestore(
         val ids = data.f07Rows(table).map { it.getString("id") }
         if (ids.any(String::isBlank) || ids.distinct().size != ids.size) invalid()
     }
-    val debts = data.f07Rows("debts").map { raw ->
+    val auditOrder = state.f07Rows("audit").mapIndexed { index, row -> row.getString("requestId") to index }.toMap()
+    fun order(row: JSONObject) = auditOrder[row.getString("requestId")] ?: invalid()
+    val openings = data.f07Rows("debts")
+    val debts = openings.map { raw ->
         raw.debt().also { checkRequest(F07Command.CreateDebt(raw.getString("requestId"), it)) }
     }
     val debtAccounts = debts.map { debtAccount(it.id) }.toSet()
     if (accounts.filter { it.kind == "TERM_DEBT" }.map { it.id }.toSet() != debtAccounts) invalid()
     val debtIds = debts.map { it.id }.toSet()
-    val debtsById = debts.associateBy { it.id }
     val maturityEdits = data.debtMaturityEdits()
     val maturityAuditIds = state.f07Rows("audit")
         .filter { it.getString("action") == F07Command.UpdateDebtMaturity::class.java.simpleName }
@@ -69,30 +71,68 @@ internal fun validateCommitmentRestore(
     maturityEdits.forEach { row ->
         val command = F07Command.UpdateDebtMaturity(row.getString("requestId"), row.getString("debtId"), row.getString("maturityDate"))
         checkRequest(command)
-        validateDebt((debtsById[command.debtId] ?: invalid()).withMaturity(command.maturityDate), accounts)
+        if (command.debtId !in debtIds) invalid()
+    }
+    val edits = data.loanEdits()
+    val editAuditIds = state.f07Rows("audit")
+        .filter { it.getString("action") == F07Command.EditLoan::class.java.simpleName }
+        .map { it.getString("requestId") }
+    if (edits.map { it.getString("requestId") } != editAuditIds) invalid()
+    edits.forEach { row ->
+        val command = F07Command.EditLoan(row.getString("requestId"), row.getJSONObject("debt").debt())
+        checkRequest(command)
+        if (command.debt.id !in debtIds ||
+            audits[command.requestId]?.singleOrNull()?.getString("subjectId") != command.debt.id) invalid()
     }
     if ((data.f07Rows("checks") + data.f07Rows("payments")).any { it.getString("debtId") !in debtIds }) invalid()
-    debts.forEach { debt ->
-        validateDebt(debt, accounts)
-        val accountId = debtAccount(debt.id)
+    openings.forEach { opening ->
+        val original = opening.debt()
+        validateDebt(original, accounts)
+        val accountId = debtAccount(original.id)
+        val entries = data.debtEntries(original.id)
+        val openingOrder = order(opening)
+        var revision = original
+        var debt = original
+        val firstEntryOrder = entries.firstOrNull()?.let { order(it.raw) } ?: Int.MAX_VALUE
+        val entryOrders = entries.map { order(it.raw) }
+        if (entryOrders.zipWithNext().any { (left, right) -> left >= right } || firstEntryOrder <= openingOrder) invalid()
+        val revisions = state.debtRevisions(original.id)
+        revisions.forEach { row ->
+            val revisionOrder = order(row)
+            if (revisionOrder <= openingOrder) invalid()
+            val updated = revision.applyRevision(row)
+            if (row.has("debt")) {
+                validateLoanEdit(revision, updated, entries.takeWhile { order(it.raw) < revisionOrder }, accounts)
+            } else {
+                validateDebt(updated, accounts)
+            }
+            revision = updated
+            if (revisionOrder < firstEntryOrder) debt = updated
+        }
         val liability = accounts.single { it.id == accountId }
-        if (liability.openingMinor != -debt.openingMinor || liability.currency != debt.currency.name ||
-            liability.creditLimitMinor != 0L || liability.name != debt.name) invalid()
+        if (liability.openingMinor != -revision.openingMinor || liability.currency != revision.currency.name ||
+            liability.creditLimitMinor != 0L || liability.name != revision.name) invalid()
         var principal = debt.openingMinor
         var previous = LocalDate.parse(debt.openingDate)
-        val entries = data.debtEntries(debt.id)
         val voids = entries.filter { it.voided }.groupBy { it.raw.f07Long("voidAfterSequence") }
         if (voids.keys.any { it !in 1..entries.size.toLong() }) invalid()
         val active = mutableListOf<DebtEntry>()
+        val pendingRevisions = revisions.iterator()
+        var nextRevision = if (pendingRevisions.hasNext()) pendingRevisions.next() else null
+        var entryDebt = original
         entries.forEachIndexed { index, entry ->
             if (entry.sequence != index + 1L || entry.date < previous) invalid()
             previous = entry.date
+            while (nextRevision?.let { order(it) < order(entry.raw) } == true) {
+                entryDebt = entryDebt.applyRevision(checkNotNull(nextRevision))
+                nextRevision = if (pendingRevisions.hasNext()) pendingRevisions.next() else null
+            }
             val requestId = entry.raw.getString("requestId")
             val link = "f07-ledger:$requestId"
             val payment = entry.payment
             if (payment != null) {
                 checkRequest(F07Command.PayDebt(requestId, payment))
-                validateDebtPayment(payment, debt, principal, accounts)
+                validateDebtPayment(payment, entryDebt, principal, accounts)
                 if (entry.raw.get("voided") !is Boolean ||
                     entry.resultingPrincipal != principal - payment.principalMinor || entry.raw.f07Text("operationId") != link) invalid()
                 val operation = checkOperation(link, "DEBT_PAYMENT", payment.date, payment.accountId, payment.totalMinor)

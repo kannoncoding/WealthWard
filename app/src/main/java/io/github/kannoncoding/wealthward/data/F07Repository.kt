@@ -18,7 +18,7 @@ class F07Repository(private val db: WealthDatabase) {
 
     private suspend fun load() = JSONObject(dao.workspaceState()?.payload ?: F05Repository.EMPTY_STATE)
 
-    internal suspend fun debts(): List<DebtStatus> = load().commitments().debtStatuses()
+    internal suspend fun debts(): List<DebtStatus> = load().debtStatuses()
 
     suspend fun snapshot(month: String = YearMonth.now(BusinessTime.zone).toString()): F07Snapshot = db.withTransaction {
         val state = load()
@@ -76,7 +76,7 @@ class F07Repository(private val db: WealthDatabase) {
             CreditStatementStatus(statement, financial.accounts.first { it.id == statement.accountId }.openingMinor,
                 (statement.statementMinor - cashPaid).coerceAtLeast(0), holdIds)
         }
-        F07Snapshot(data.debtStatuses(),
+        F07Snapshot(state.debtStatuses(),
             savings, projects, statements, data.f07Rows("evidence").map { it.creditEvidence() }, schedule)
     }
 
@@ -99,8 +99,17 @@ class F07Repository(private val db: WealthDatabase) {
                 dao.insertAccount(AccountEntity(accountId, debt.name, debt.currency.name, "TERM_DEBT", -debt.openingMinor))
                 data.f07Add("debts", row(debt, command.requestId))
             }
+            is F07Command.EditLoan -> {
+                val debt = command.debt
+                val previous = state.revisedDebt(data.f07Row("debts", debt.id).debt())
+                validateLoanEdit(previous, debt, data.debtEntries(debt.id), dao.accounts())
+                val account = dao.accounts().single { it.id == debtAccount(debt.id) }
+                dao.updateAccount(account.copy(name = debt.name, openingMinor = -debt.openingMinor))
+                val edits = data.optJSONArray("loanEdits") ?: JSONArray().also { data.put("loanEdits", it) }
+                edits.put(row(command, command.requestId))
+            }
             is F07Command.UpdateDebtMaturity -> {
-                val debt = data.f07Row("debts", command.debtId).debt().withMaturity(command.maturityDate)
+                val debt = state.revisedDebt(data.f07Row("debts", command.debtId).debt()).withMaturity(command.maturityDate)
                 validateDebt(debt, dao.accounts())
                 val lastDueMonth = YearMonth.from(LocalDate.parse(debt.firstDueDate))
                     .plusMonths((debt.remainingMonths - 1L) * debt.intervalMonths).toString()
@@ -112,7 +121,7 @@ class F07Repository(private val db: WealthDatabase) {
             }
             is F07Command.PayDebt -> {
                 val payment = command.payment
-                val debt = data.f07Row("debts", payment.debtId).debt()
+                val debt = state.revisedDebt(data.f07Row("debts", payment.debtId).debt())
                 val entries = data.debtEntries(debt.id)
                 val day = LocalDate.parse(payment.date)
                 val principal = entries.lastOrNull { !it.voided }?.resultingPrincipal ?: debt.openingMinor
@@ -140,7 +149,7 @@ class F07Repository(private val db: WealthDatabase) {
             }
             is F07Command.VerifyBalance -> {
                 val check = command.balance
-                val debt = data.f07Row("debts", check.debtId).debt()
+                val debt = state.revisedDebt(data.f07Row("debts", check.debtId).debt())
                 val entries = data.debtEntries(debt.id)
                 validateDebtDate(debt, entries, LocalDate.parse(check.date))
                 if (check.principalMinor < 0 || check.reference.isBlank()) f07Invalid("Enter the creditor balance and a verification reference")
@@ -192,7 +201,8 @@ class F07Repository(private val db: WealthDatabase) {
         }
         state.put("f07", data)
         state.getJSONArray("audit").put(JSONObject().put("requestId", command.requestId)
-            .put("action", command.javaClass.simpleName).put("subjectId", command.requestId)
+            .put("action", command.javaClass.simpleName)
+            .put("subjectId", if (command is F07Command.EditLoan) command.debt.id else command.requestId)
             .put("reason", when (command) {
                 is F07Command.VerifyBalance -> command.balance.reference
                 is F07Command.VoidDebtPayment -> command.reason
@@ -211,9 +221,31 @@ class F07Repository(private val db: WealthDatabase) {
     private fun row(value: Any, request: String) = (canonicalPlanning(value) as JSONObject).put("requestId", request)
 }
 
-private fun JSONObject.debtStatuses(): List<DebtStatus> = f07Rows("debts").map { row ->
-    val debt = debtWithMaturity(row)
-    debtStatus(debt, debtEntries(debt.id))
+private fun JSONObject.debtStatuses(): List<DebtStatus> = commitments().f07Rows("debts").map { row ->
+    val original = row.debt()
+    val entries = commitments().debtEntries(original.id)
+    debtStatus(debtSchedule(original, entries), entries)
+}
+
+internal fun validateLoanEdit(previous: Debt, debt: Debt, entries: List<DebtEntry>, accounts: List<AccountEntity>) {
+    if (previous.kind != DebtKind.PERSONAL_LOAN || previous.kind != debt.kind || previous.currency != debt.currency) {
+        f07Invalid("Edit an existing loan in its original currency.")
+    }
+    if (entries.isNotEmpty() && (debt.openingMinor != previous.openingMinor ||
+            debt.openingDate != previous.openingDate || debt.estimatedOpeningPrincipal != previous.estimatedOpeningPrincipal)) {
+        f07Invalid("The original principal and opening date are locked after debt activity. Use Verify creditor balance to correct the principal.")
+    }
+    val scheduledPayments = entries.mapNotNull { it.payment?.installmentMonth }
+    if (scheduledPayments.isNotEmpty() && (debt.firstDueDate != previous.firstDueDate || debt.intervalMonths != previous.intervalMonths)) {
+        f07Invalid("Keep the first installment date and frequency once installments have been recorded.")
+    }
+    validateDebt(debt, accounts)
+    fun Debt.lastInstallmentMonth() = YearMonth.from(LocalDate.parse(firstDueDate))
+        .plusMonths((remainingMonths - 1L) * intervalMonths).toString()
+    val last = debt.lastInstallmentMonth()
+    if (last < previous.lastInstallmentMonth() && scheduledPayments.any { it > last }) {
+        f07Invalid("Maturity date must include the installments already recorded.")
+    }
 }
 
 private fun netProjectPayment(id: String, operations: Map<String, OperationDetail>): Long {

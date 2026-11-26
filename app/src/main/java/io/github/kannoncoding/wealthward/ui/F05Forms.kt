@@ -53,7 +53,12 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
  @Composable fun text(key: String, label: String, default: String = "", numeric: Boolean = false, lines: Int = 1) {
   val storageKey = "${draft.scope}:$key"
   LaunchedEffect(storageKey) { if (!draft.values.containsKey(storageKey)) draft.values[storageKey] = default }
-  OutlinedTextField(value(key, default), { draft.set(key, it) }, label = { Text(label) }, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).semantics { contentDescription = label }, singleLine = lines == 1, minLines = lines, keyboardOptions = KeyboardOptions(keyboardType = if (numeric) KeyboardType.Decimal else KeyboardType.Text))
+  input(value(key, default), label, numeric, lines) { draft.set(key, it) }
+ }
+ @Composable fun input(value: String, label: String, numeric: Boolean = false, lines: Int = 1, prefix: (@Composable () -> Unit)? = null, onChange: (String) -> Unit) {
+  val fieldLabel: (@Composable () -> Unit)? = if (prefix == null) ({ Text(label) }) else null
+  if (prefix != null) Text(label, style = MaterialTheme.typography.labelLarge)
+  OutlinedTextField(value, onChange, label = fieldLabel, prefix = prefix, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).semantics { contentDescription = label }, singleLine = lines == 1, minLines = lines, keyboardOptions = KeyboardOptions(keyboardType = if (numeric) KeyboardType.Decimal else KeyboardType.Text))
  }
  @Composable fun choice(key: String, label: String, choices: List<Pair<String, String>>, default: String = ""): String {
   val validDefault = default.takeIf { id -> choices.any { it.first == id } } ?: choices.firstOrNull()?.first.orEmpty()
@@ -76,6 +81,52 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
   return checked
  }
  @Composable fun account(key: String, label: String, accounts: List<AccountDetail>, default: String = ""): String = choice(key, label, accounts.map { it.id to "${it.name} · ${it.currency}${if (it.kind == "LIABILITY") localized(" · Crédito") else ""}${if (it.archived) localized(" · Archivada") else ""}" }, default)
+}
+
+private class FxTransferFields(private val fields: Fields, private val origin: Currency, private val target: Currency) {
+ private val inputKey = "fxAmount-${origin.name}-${target.name}"
+ private val sideKey = "$inputKey-side"
+ private val inputCurrency get() = if (fields.value(sideKey) == target.name) target else origin
+ private fun rate(): CrcPerUsdRate {
+  val value = parseFxDecimal(fields.value("crcPerUsd"))
+  require(value != null && value.signum() > 0) { localized("Ingresa un tipo de cambio manual positivo.") }
+  return CrcPerUsdRate(value)
+ }
+ private fun amount(): Money {
+  val value = parseFxDecimal(fields.value(inputKey))
+  val minor = value?.let { runCatching { it.movePointRight(2).longValueExact() }.getOrNull() }
+  require(minor != null && minor > 0L) { localized("Ingresa un monto positivo con máximo dos decimales.") }
+  return Money(minor, inputCurrency)
+ }
+
+ @Composable fun Show() {
+  fields.input(fields.value("crcPerUsd"), localized("Tipo de cambio manual"), numeric = true, prefix = { Text("\$1 USD = ₡") }) {
+   fields.draft.set("crcPerUsd", it)
+  }
+  val input = inputCurrency
+  val converted = runCatching {
+   rate().convert(amount()).decimal().toPlainString()
+  }.getOrDefault("")
+  fields.input(if (input == origin) fields.value(inputKey) else converted, localized("Monto de salida ({0})", origin), numeric = true) {
+   fields.draft.set(sideKey, origin.name)
+   fields.draft.set(inputKey, it)
+  }
+  fields.input(if (input == target) fields.value(inputKey) else converted, localized("Monto recibido ({0})", target), numeric = true) {
+   fields.draft.set(sideKey, target.name)
+   fields.draft.set(inputKey, it)
+  }
+ }
+
+ fun command(source: String, destination: String): F05Command.Transfer {
+  val rate = rate()
+  val entered = amount()
+  val converted = rate.convert(entered)
+  require(converted.minor > 0L) { localized("Los dos montos deben ser positivos.") }
+  val sent = if (entered.currency == origin) entered else converted
+  val received = if (entered.currency == target) entered else converted
+  return F05Command.Transfer(fields.draft.request(), source, destination, sent.minor, received.minor, fields.date(),
+   rate = rate.destinationPerOrigin(origin), rateSource = "Manual", notes = fields.value("notes"))
+ }
 }
 
 @Composable internal fun F05Form(action: String, subject: String, snapshot: F05Snapshot, draft: Drafts, busy: Boolean, onError: (String) -> Unit, onSubmit: (F05Command) -> Unit, onCancel: () -> Unit, preview: suspend (List<ImportRow>) -> List<ImportIssue>) {
@@ -227,17 +278,31 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
   "transfer", "withdraw", "fx", "payment", "moveReserve" -> {
    val source = f.account("source", localized("Cuenta de origen"), cash, selectedAccount?.id.orEmpty())
    val origin = cash.find { it.id == source }
-   val destinations = (if (action == "payment") credit else cash).filter { it.id != source && (if (action == "fx") it.currency != origin?.currency else it.currency == origin?.currency) }.filter { if (action == "withdraw") it.productId.startsWith("cash") || it.name.contains(localized("efectivo"), true) else true }
-   val destination = f.account("destination", if (action == "payment") localized("Tarjeta y moneda a pagar") else localized("Cuenta de destino"), destinations, if (action == "payment") selectedAccount?.id.orEmpty() else "")
+   val destinations = (if (action == "payment") credit else cash).filter { candidate ->
+    candidate.id != source && when (action) {
+     "transfer" -> true
+     "fx" -> candidate.currency != origin?.currency
+     else -> candidate.currency == origin?.currency
+    }
+   }.filter { if (action == "withdraw") it.productId.startsWith("cash") || it.name.contains(localized("efectivo"), true) else true }
+   val defaultDestination = when (action) {
+    "payment" -> selectedAccount?.id.orEmpty()
+    "transfer" -> destinations.firstOrNull { it.currency == origin?.currency }?.id.orEmpty()
+    else -> ""
+   }
+   val destination = f.account("destination", if (action == "payment") localized("Tarjeta y moneda a pagar") else localized("Cuenta de destino"), destinations, defaultDestination)
    val target = destinations.find { it.id == destination }
    if (destinations.isEmpty()) Text(if (action == "withdraw") localized("Primero crea una cuenta de tipo Efectivo físico en Cuentas, con la moneda de origen.") else localized("No hay destino elegible. Crea o restaura una cuenta de la moneda y tipo necesarios."), color = MaterialTheme.colorScheme.error)
    Text(localized("Salida {0} → Entrada {1}", origin?.currency, target?.currency))
    if (action == "payment") Text(localized("Confirma un pago real. Reduce dinero propio y deuda; no registra un segundo gasto."))
-   f.text("amount", localized("Monto/Importe real de salida"), numeric = true)
-   if (action == "fx") { f.text("received", localized("Monto/Importe real recibido"), numeric = true); f.text("rate", localized("Tasa registrada (obligatoria)"), numeric = true); f.text("rateSource", localized("Fuente de tasa (obligatoria)")); Text(localized("La fecha de la operación también fecha el registro de conversión. No se calcula ningún importe ni tasa por ti.")) }
-   f.text("fee", localized("Comisión en moneda de origen"), "0.00", true)
+   val fx = if (origin != null && target != null && origin.currency != target.currency) FxTransferFields(f, origin.currency, target.currency) else null
+   if (fx != null) {
+    fx.Show()
+   } else if (action != "fx") {
+    f.text("amount", localized("Monto/Importe real de salida"), numeric = true)
+    f.text("fee", localized("Comisión en moneda de origen"), "0.00", true)
+   }
    f.calendar("date", localized("Fecha"), today())
-   if (action == "fx") f.calendar("rateDate", localized("Fecha de tasa (si difiere)"), optional = true)
    f.text("notes", localized("Notas (opcional)"), lines = 2)
    val purpose = if (action == "moveReserve") f.choice("purpose", localized("Reserva que viaja con el dinero"), origin?.reserves.orEmpty().filter { it.minor > 0 }.map { it.purposeId to "${it.name} · ${decimal(it.minor)}" }) else ""
    val allocations = mutableListOf<() -> CreditPaymentAllocation>()
@@ -263,7 +328,21 @@ internal class Fields(val draft: Drafts, val busy: Boolean) {
    }
    if (action == "moveReserve") Text(localized("La reserva y el dinero se transfieren juntos; el destino conserva el mismo propósito. La comisión consume dinero sin asignar."))
    val confirmed = f.check("confirmed", localized("Confirmo que la transferencia o pago ocurrió"))
-   command = { require(confirmed) { localized("Confirma que esta operación ocurrió.") }; require(source.isNotBlank() && destination.isNotBlank()) { localized("Selecciona origen y destino elegibles de la moneda correcta.") }; if (action == "moveReserve") require(purpose.isNotBlank()) { localized("Selecciona una reserva financiada.") }; val amount = f.amount(); if (action == "fx") { f.required("rate", localized("tasa registrada")); f.required("rateSource", localized("fuente de tasa")) }; val paymentAllocations = allocations.map { it() }; if (action == "payment") require(paymentAllocations.fold(0L) { total, entry -> Math.addExact(total, entry.minor) } == amount) { localized("Las aplicaciones a compras deben sumar exactamente el principal del pago.") }; F05Command.Transfer(draft.request(), source, destination, amount, if (action == "fx") f.amount("received", localized("importe recibido")) else amount, f.date(), f.amount("fee", localized("comisión"), "0.00", true), purpose.ifBlank { null }, f.value("rate").ifBlank { null }, f.value("rateSource").ifBlank { null }, f.value("notes"), null, f.optionalDate("rateDate"), paymentAllocations) }
+   command = {
+    require(confirmed) { localized("Confirma que esta operación ocurrió.") }
+    require(source.isNotBlank() && destination.isNotBlank()) { localized("Selecciona origen y destino elegibles de la moneda correcta.") }
+    if (fx != null) {
+     fx.command(source, destination)
+    } else {
+     if (action == "moveReserve") require(purpose.isNotBlank()) { localized("Selecciona una reserva financiada.") }
+     val amount = f.amount()
+     val paymentAllocations = allocations.map { it() }
+     if (action == "payment") require(paymentAllocations.fold(0L) { total, entry -> Math.addExact(total, entry.minor) } == amount) { localized("Las aplicaciones a compras deben sumar exactamente el principal del pago.") }
+     F05Command.Transfer(draft.request(), source, destination, amount, amount, f.date(),
+      f.amount("fee", localized("comisión"), "0.00", true), purpose.ifBlank { null },
+      notes = f.value("notes"), creditAllocations = paymentAllocations)
+    }
+   }
   }
   "reserve", "release", "redistribute" -> {
    val account = f.account("account", localized("Cuenta con dinero existente"), cash, selectedAccount?.id.orEmpty())

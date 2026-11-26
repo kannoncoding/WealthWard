@@ -34,6 +34,91 @@ class F07PersistenceTest {
         } catch (_: DomainFailure) { }
     }
 
+    @Test fun loanRevisionsPreserveOpeningHistoryAndBookedInstallmentsThroughRestore() = runBlocking {
+        inDatabase { db ->
+            val finance = FinanceRepository(db)
+            finance.cash("cash", 100_000)
+            val store = finance.commitments
+            val original = Debt("personal", "Loan", "Fixed", Currency.CRC, DebtKind.PERSONAL_LOAN,
+                49_000, "2027-01-01", "2027-01-30", 10_000, 6)
+            val create = F07Command.CreateDebt("open-loan", original)
+            store.execute(create)
+            val corrected = original.copy(openingMinor = 50_000, openingDate = "2027-01-02")
+            val correctOpening = F07Command.EditLoan("correct-opening", corrected)
+            store.execute(correctOpening)
+            val january = DebtPayment("jan", original.id, "cash", "2027-01-30", "2027-01", 10_000, 0, 0)
+            val february = DebtPayment("feb", original.id, "cash", "2027-02-28", "2027-02", 4_000, 0, 0)
+            store.execute(F07Command.PayDebt("pay-jan", january))
+            store.execute(F07Command.PayDebt("pay-feb", february))
+            val revised = corrected.copy(name = "Renamed loan", group = "Loans", installmentMinor = 15_000)
+            val edit = F07Command.EditLoan("edit-terms", revised)
+            store.execute(edit)
+            rejects { store.execute(F07Command.EditLoan("change-opening", revised.copy(openingMinor = 50_001))) }
+            rejects { store.execute(F07Command.EditLoan("change-frequency", revised.copy(intervalMonths = 2))) }
+            rejects { store.execute(F07Command.EditLoan("shorten-term", revised.copy(remainingMonths = 1))) }
+            val saved = store.snapshot("2027-03")
+            assertEquals(revised, saved.debts.single().debt)
+            assertEquals(36_000L, saved.debts.single().principalMinor)
+            assertEquals(listOf(january, february), saved.debts.single().payments)
+            assertEquals(mapOf("2027-01" to 0L, "2027-02" to 6_000L, "2027-03" to 15_000L),
+                saved.installments.associate { it.nominalMonth to it.pendingMinor })
+            store.execute(F07Command.VerifyBalance("verify-loan",
+                CreditorBalance("loan-statement", original.id, "2027-03-01", 35_500, "March statement")))
+            val fixture = finance.exportFixture()
+            inDatabase { restored ->
+                val copy = FinanceRepository(restored)
+                copy.restoreFixture(fixture)
+                assertEquals(store.snapshot("2027-03"), copy.commitments.snapshot("2027-03"))
+                assertEquals(35_500L, copy.commitments.snapshot("2027-03").debts.single().principalMinor)
+                assertEquals(create.requestId, copy.commitments.execute(create))
+                assertEquals(correctOpening.requestId, copy.commitments.execute(correctOpening))
+                assertEquals(edit.requestId, copy.commitments.execute(edit))
+                val bad = JSONObject(fixture)
+                val rows = bad.getJSONObject("workspace").getJSONObject("f07").getJSONArray("loanEdits")
+                rows.getJSONObject(1).getJSONObject("debt").put("openingMinor", 50_001)
+                rejects { copy.restoreFixture(bad.toString()) }
+                assertEquals(fixture, copy.exportFixture())
+            }
+        }
+    }
+
+    @Test fun explicitLoanTermsSupersedeOnlyEarlierExtraPaymentOverrides() = runBlocking {
+        inDatabase { db ->
+            val finance = FinanceRepository(db)
+            finance.cash("cash", 100_000)
+            val store = finance.commitments
+            val loan = Debt("override-loan", "Loan", "Fixed", Currency.CRC, DebtKind.PERSONAL_LOAN,
+                80_000, "2027-01-01", "2027-01-31", 10_000, 6)
+            store.execute(F07Command.CreateDebt("open-override-loan", loan))
+            store.execute(F07Command.PayDebt("january-extra", DebtPayment("jan-extra", loan.id, "cash",
+                "2027-01-15", null, 2_000, 0, 0, actualNextInstallmentMinor = 8_000, actualRemainingMonths = 1)))
+            val renamed = loan.copy(name = "Renamed loan", group = "Loans")
+            store.execute(F07Command.EditLoan("rename-override-loan", renamed))
+            val afterRename = store.snapshot("2027-04")
+            assertEquals(mapOf("2027-01" to 10_000L, "2027-02" to 8_000L),
+                afterRename.installments.associate { it.nominalMonth to it.expectedMinor })
+            store.execute(F07Command.PayDebt("february-installment", DebtPayment("feb-scheduled", loan.id, "cash",
+                "2027-02-28", "2027-02", 8_000, 0, 0)))
+            store.execute(F07Command.EditLoan("revise-override-loan",
+                renamed.copy(installmentMinor = 15_000, remainingMonths = 5)))
+            val revised = store.snapshot("2027-04")
+            assertEquals(70_000L, revised.debts.single().principalMinor)
+            assertEquals("2027-05-31", revised.debts.single().projectedPayoffDate)
+            assertEquals(0L, revised.installments.single { it.nominalMonth == "2027-02" }.pendingMinor)
+            assertEquals(15_000L, revised.installments.single { it.nominalMonth == "2027-03" }.expectedMinor)
+            store.execute(F07Command.PayDebt("march-extra", DebtPayment("mar-extra", loan.id, "cash",
+                "2027-03-15", null, 2_000, 0, 0, actualNextInstallmentMinor = 12_000, actualRemainingMonths = 1)))
+            val saved = store.snapshot("2027-05")
+            assertEquals(12_000L, saved.installments.single { it.nominalMonth == "2027-04" }.expectedMinor)
+            assertEquals("2027-04-30", saved.debts.single().projectedPayoffDate)
+            inDatabase { restored ->
+                val copy = FinanceRepository(restored)
+                copy.restoreFixture(finance.exportFixture())
+                assertEquals(saved, copy.commitments.snapshot("2027-05"))
+            }
+        }
+    }
+
     @Test fun mortgageMaturityKeepsTheExactDateAndEditsSurviveRestore() = runBlocking {
         inDatabase { db ->
             val finance = FinanceRepository(db)

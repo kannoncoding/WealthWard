@@ -22,7 +22,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 
-/** Production forms with the real transactional Room boundary, using fictitious CRC only. */
+/** Production forms with the real transactional Room boundary and fictitious accounts. */
 class F05UiTest {
  @get:Rule val ui = createComposeRule()
  private lateinit var db: WealthDatabase
@@ -62,6 +62,37 @@ class F05UiTest {
  private fun saved() { ui.waitUntil(10000) { status.value == "Guardado" }; ui.waitForIdle() }
  private fun snapshot() = runBlocking { repo.snapshot() }
  private fun expense() { text("Monto/Importe", "15000"); text("Comercio", "Comercio genérico"); text("Categoría", "Alimentos") }
+
+ @Test fun crossCurrencyTransferCalculatesEitherSideAndPostsBothNativeAmounts() {
+  runBlocking {
+   repo.execute(F05Command.CreateAccount("setup-usd", "usd", "deposit-usd", "Cuenta USD", Currency.USD, "CASH", 0, "2026-01-01"))
+  }
+  val withUsd = snapshot()
+  ui.runOnIdle { state.value = withUsd }
+  open("transfer", "a")
+  ui.onNodeWithContentDescription("Cuenta de destino").performScrollTo().performClick()
+  ui.onNodeWithText("Cuenta USD · USD").performClick()
+  ui.onNodeWithText("\$1 USD = ₡").assertExists()
+  ui.onNodeWithContentDescription("Comisión en moneda de origen").assertDoesNotExist()
+  ui.onNodeWithContentDescription("Fuente de tasa (obligatoria)").assertDoesNotExist()
+  ui.onNodeWithContentDescription("Fecha de tasa (si difiere)").assertDoesNotExist()
+  text("Tipo de cambio manual", "512,5")
+  text("Monto de salida (CRC)", "5.125,00")
+  ui.onNodeWithContentDescription("Monto recibido (USD)").assertTextContains("10.00")
+  text("Monto recibido (USD)", "")
+  ui.onNodeWithText("5.125,00", substring = false).assertDoesNotExist()
+  text("Monto recibido (USD)", "20")
+  ui.onNodeWithContentDescription("Monto de salida (CRC)").assertTextContains("10250.00")
+  click("Confirmo que la transferencia o pago ocurrió")
+  click("Guardar"); saved()
+  val result = snapshot()
+  val transfer = result.operations.single()
+  assertEquals("FX_TRANSFER", transfer.type)
+  assertEquals(1025000L, transfer.amountMinor)
+  assertEquals(2000L, transfer.destinationMinor)
+  assertEquals(48975000L, result.accounts.single { it.id == "a" }.balanceMinor)
+  assertEquals(2000L, result.accounts.single { it.id == "usd" }.balanceMinor)
+ }
 
  @Test fun postingDateIsHiddenAndCorrectionPreservesExistingAccountingDate() {
   runBlocking {

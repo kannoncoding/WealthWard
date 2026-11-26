@@ -22,6 +22,7 @@ import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertWidthIsAtLeast
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -38,6 +39,35 @@ import org.junit.Test
 
 class AccountMonthUiTest {
     @get:Rule val ui = createComposeRule()
+
+    @Test fun recordActionsKeepTwoEqualColumnsAndAccessibleTargets() {
+        val names = listOf("Registrar pago", "Confirmar importe", "Vincular movimiento", "Cambiar periodo")
+        var clicked: String? = null
+        ui.setContent {
+            val density = Density(LocalDensity.current.density, fontScale = 1.5f)
+            CompositionLocalProvider(LocalDensity provides density) {
+                WealthTheme(false) {
+                    Box(Modifier.width(240.dp)) {
+                        RecordActionGrid(names.map { name ->
+                            recordAction(name, "Alquiler") { clicked = name }
+                        })
+                    }
+                }
+            }
+        }
+        val cells = names.map { name ->
+            ui.onNodeWithContentDescription("$name · Alquiler")
+                .assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+        }
+        val (topLeft, topRight, bottomLeft, bottomRight) = cells.map { it.getUnclippedBoundsInRoot() }
+        assertTrue(topLeft.top == topRight.top && bottomLeft.top == bottomRight.top)
+        assertTrue(topLeft.left == bottomLeft.left && topRight.left == bottomRight.left)
+        assertTrue(topLeft.right <= topRight.left && topLeft.bottom <= bottomLeft.top)
+        val widths = listOf(topLeft, topRight, bottomLeft, bottomRight).map { it.right - it.left }
+        assertTrue(widths.max() - widths.min() <= 1.dp)
+        cells.last().performClick()
+        ui.runOnIdle { assertTrue(clicked == names.last()) }
+    }
 
     @Test fun sharedBillsShowOwnShareGrossAndPaymentStatus() {
         val percent = RecurringTemplate("rent", 1, "Alquiler", "Hogar", PlanNature.FIXED,
@@ -107,7 +137,7 @@ class AccountMonthUiTest {
     @Test fun navigationLabelsFitOnNarrowScreensAndScrollWithLargeText() {
         val largeText = mutableStateOf(false)
         val selected = mutableStateOf(0)
-        val tabs = listOf("Resumen", "Movimientos", "Cuentas", "Metas", "Config")
+        val tabs = listOf("Resumen", "Movimientos", "Finanzas", "Config")
         ui.setContent {
             val deviceDensity = LocalDensity.current.density
             val systemDensity = Density(deviceDensity, fontScale = if (largeText.value) 2f else 1f)
@@ -146,6 +176,31 @@ class AccountMonthUiTest {
         listOf("Config", "Movimientos").forEach { title ->
             ui.onNodeWithText(title).performScrollTo().performClick().assertIsSelected()
             assertWholeLabel(title)
+        }
+    }
+    @Test fun financeHubOpensEachModuleInTheRequestedOrder() {
+        val routes = mutableListOf<String>()
+        val sections = listOf("Cuentas", "Gastos y Suscripciones", "Ingresos", "Deudas y Préstamos", "Ahorros y Metas")
+        ui.setContent {
+            WealthTheme(false) {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    FinanceMenu { route, _ -> routes.add(route) }
+                }
+            }
+        }
+        var lastTop = -1.dp
+        sections.forEach { label ->
+            val item = ui.onNodeWithText(label)
+            val top = item.getUnclippedBoundsInRoot().top
+            assertTrue("$label must follow the previous module", top > lastTop)
+            lastTop = top
+        }
+        sections.forEach { ui.onNodeWithText(it).performScrollTo().performClick() }
+        ui.runOnIdle {
+            org.junit.Assert.assertEquals(
+                listOf("sectionFinancialAccounts", "sectionBills", "sectionIncome", "sectionDebt", "sectionFinancialSavings"),
+                routes,
+            )
         }
     }
 }

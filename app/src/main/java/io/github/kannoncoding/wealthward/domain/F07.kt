@@ -61,6 +61,8 @@ data class DebtStatus(
     val projectedInstallmentMinor: Long?,
     val projectedRemainingMonths: Int?,
     val projectedPayoffDate: String? = null,
+    val hasHistory: Boolean = false,
+    val hasScheduledPayments: Boolean = false,
 )
 data class SavingGoal(
     val id: String,
@@ -104,6 +106,7 @@ data class F07Snapshot(
 sealed interface F07Command {
     val requestId: String
     data class CreateDebt(override val requestId: String, val debt: Debt) : F07Command
+    data class EditLoan(override val requestId: String, val debt: Debt) : F07Command
     data class UpdateDebtMaturity(override val requestId: String, val debtId: String, val maturityDate: String) : F07Command
     data class PayDebt(override val requestId: String, val payment: DebtPayment) : F07Command
     data class VoidDebtPayment(override val requestId: String, val paymentId: String, val reason: String) : F07Command
